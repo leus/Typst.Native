@@ -1,6 +1,6 @@
 [package]
 name = "typst-ffi"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -17,7 +17,7 @@ typst = "0.14"
 typst-pdf = "0.14"
 typst-svg = "0.14"
 typst-render = "0.12"
-typst-kit = "0.14"
+typst-kit = { version = "0.14", features = ["fonts", "embed-fonts"] }
 
 # Supporting crates
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

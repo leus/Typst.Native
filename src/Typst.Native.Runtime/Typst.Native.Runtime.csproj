@@ -49,4 +49,57 @@
     <None Include="Typst.Native.Runtime.targets" PackagePath="buildTransitive" Pack="true" />
   </ItemGroup>
 
+  <!--
+    Local development: automatically copy the native library from the Cargo
+    release output into the correct runtimes/ subfolder. This runs during
+    `dotnet build` so the .NET projects always pick up the latest native build.
+    In CI the binaries are downloaded from artifact storage instead, so the
+    Exists() condition simply causes this target to no-op.
+  -->
+  <Target Name="CopyNativeFromCargoOutput" BeforeTargets="Build;Pack"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+
+    <PropertyGroup>
+      <_CargoReleaseDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\native\typst-ffi\target\release'))</_CargoReleaseDir>
+      <_NativeArch>$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)</_NativeArch>
+    </PropertyGroup>
+
+    <!-- Windows -->
+    <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+      <_CargoLib>typst_ffi.dll</_CargoLib>
+      <_NativeRid Condition="'$(_NativeArch)' == 'X64'">win-x64</_NativeRid>
+      <_NativeRid Condition="'$(_NativeArch)' == 'Arm64'">win-arm64</_NativeRid>
+    </PropertyGroup>
+
+    <!-- Linux -->
+    <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+      <_CargoLib>libtypst_ffi.so</_CargoLib>
+      <_NativeRid Condition="'$(_NativeArch)' == 'X64'">linux-x64</_NativeRid>
+      <_NativeRid Condition="'$(_NativeArch)' == 'Arm64'">linux-arm64</_NativeRid>
+    </PropertyGroup>
+
+    <!-- macOS -->
+    <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+      <_CargoLib>libtypst_ffi.dylib</_CargoLib>
+      <_NativeRid Condition="'$(_NativeArch)' == 'X64'">osx-x64</_NativeRid>
+      <_NativeRid Condition="'$(_NativeArch)' == 'Arm64'">osx-arm64</_NativeRid>
+    </PropertyGroup>
+
+    <PropertyGroup>
+      <_CargoOutput>$(_CargoReleaseDir)\$(_CargoLib)</_CargoOutput>
+      <_NativeDestDir>$(MSBuildThisFileDirectory)runtimes\$(_NativeRid)\native\</_NativeDestDir>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(_NativeDestDir)" Condition="Exists('$(_CargoOutput)')" />
+    <Copy SourceFiles="$(_CargoOutput)"
+          DestinationFolder="$(_NativeDestDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(_CargoOutput)')" />
+    <Message Importance="high"
+             Text="Copied $(_CargoLib) → runtimes/$(_NativeRid)/native/"
+             Condition="Exists('$(_CargoOutput)')" />
+    <Error Text="Native library not found. Run 'cargo build --release' in native/typst-ffi/ first, or ensure CI artifacts have been placed in runtimes/."
+           Condition="!Exists('$(_CargoOutput)') AND !Exists('$(_NativeDestDir)$(_CargoLib)')" />
+  </Target>
+
 </Project>

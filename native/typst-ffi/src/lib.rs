@@ -18,6 +18,8 @@ use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::slice;
 
+use typst::World;
+
 // ---------------------------------------------------------------------------
 // Opaque handle types
 // ---------------------------------------------------------------------------
@@ -210,42 +212,93 @@ pub unsafe extern "C" fn typst_compile(
 /// Internal compilation logic, separated for readability and to keep
 /// unsafe code minimal.
 fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
-    // TODO: Replace this stub with actual Typst compilation.
-    //
-    // Implementation steps:
-    //   1. Create a `world::SimpleWorld` with:
-    //      - `compiler.root` as the file system root
-    //      - `compiler.font_paths` for font discovery
-    //      - `source` as the main input
-    //   2. Call `typst::compile(&world)`:
-    //      - On `Ok(document)`:
-    //        a. `typst_pdf::pdf(&document, ...)` → PDF bytes
-    //        b. For each page: `typst_svg::svg(&document.pages[i])` → SVG string
-    //        c. Return `CompileResultKind::Success`
-    //      - On `Err(diagnostics)`:
-    //        a. Map each `SourceDiagnostic` to `TypstDiagnosticEntry`
-    //        b. Return `CompileResultKind::Failure`
-    //
-    // For now, produce a stub PDF so the C# integration can be tested
-    // end-to-end without the full Typst dependency wired up.
+    use typst::diag::{Severity, Warned};
+    use typst::layout::PagedDocument;
+    use typst_pdf::PdfOptions;
 
-    let _ = compiler;
-
-    // Minimal valid-ish PDF for scaffolding purposes.
-    let stub_pdf = format!(
-        "%PDF-1.4\n% stub — source length: {} bytes\n%%EOF\n",
-        source.len()
+    let world = world::SimpleWorld::new(
+        source,
+        compiler.root.clone(),
+        &compiler.font_paths,
     );
 
-    TypstCompileResult {
-        kind: CompileResultKind::Success {
-            pdf: stub_pdf.into_bytes(),
-            svg_pages: vec![format!(
-                "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>{}</text></svg>",
-                "stub"
-            )],
-            page_count: 1,
-        },
+    let Warned { output, warnings: _ } =
+        typst::compile::<PagedDocument>(&world);
+
+    match output {
+        Ok(document) => {
+            // Export to PDF
+            let pdf = match typst_pdf::pdf(&document, &PdfOptions::default()) {
+                Ok(bytes) => bytes,
+                Err(errors) => {
+                    let diagnostics = errors
+                        .iter()
+                        .map(|d| TypstDiagnosticEntry {
+                            severity: match d.severity {
+                                Severity::Error => 0,
+                                Severity::Warning => 1,
+                            },
+                            message: d.message.to_string(),
+                            line: 0,
+                            column: 0,
+                        })
+                        .collect();
+                    return TypstCompileResult {
+                        kind: CompileResultKind::Failure { diagnostics },
+                    };
+                }
+            };
+
+            // Export SVG per page
+            let svg_pages: Vec<String> = document
+                .pages
+                .iter()
+                .map(|page| typst_svg::svg(page))
+                .collect();
+
+            let page_count = document.pages.len() as i32;
+
+            TypstCompileResult {
+                kind: CompileResultKind::Success {
+                    pdf,
+                    svg_pages,
+                    page_count,
+                },
+            }
+        }
+        Err(errors) => {
+            let diagnostics = errors
+                .iter()
+                .map(|d| {
+                    let (line, column) = if let Some(id) = d.span.id() {
+                        if let Ok(src) = world.source(id) {
+                            let range = src.range(d.span).unwrap_or(0..0);
+                            let line_idx = src.lines().byte_to_line(range.start).unwrap_or(0);
+                            let col_idx = src.lines().byte_to_column(range.start).unwrap_or(0);
+                            (line_idx as i64, col_idx as i64)
+                        } else {
+                            (0, 0)
+                        }
+                    } else {
+                        (0, 0)
+                    };
+
+                    TypstDiagnosticEntry {
+                        severity: match d.severity {
+                            Severity::Error => 0,
+                            Severity::Warning => 1,
+                        },
+                        message: d.message.to_string(),
+                        line,
+                        column,
+                    }
+                })
+                .collect();
+
+            TypstCompileResult {
+                kind: CompileResultKind::Failure { diagnostics },
+            }
+        }
     }
 }
 
@@ -449,7 +502,7 @@ pub unsafe extern "C" fn typst_buffer_free(buffer: *mut TypstBuffer) {
 #[no_mangle]
 pub extern "C" fn typst_version() -> *const c_char {
     // SAFETY: The byte string is null-terminated and lives for 'static.
-    b"0.1.0\0".as_ptr() as *const c_char
+    b"0.1.1\0".as_ptr() as *const c_char
 }
 
 // ===========================================================================
@@ -458,25 +511,141 @@ pub extern "C" fn typst_version() -> *const c_char {
 
 mod world {
     //! Minimal `typst::World` implementation for in-memory compilation.
-    //!
-    //! ## TODO
-    //!
-    //! Implement the `typst::World` trait here. The struct should hold:
-    //!
-    //! - The main source text
-    //! - A font book loaded from configured font paths + system fonts
-    //! - A file resolver rooted at the configured root directory
-    //!
-    //! Refer to the Typst CLI source (`crates/typst-cli/src/world.rs`) for
-    //! a full-featured reference implementation.
 
-    use std::path::PathBuf;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
 
-    #[allow(dead_code)]
+    use chrono::{Datelike, Timelike};
+    use typst::diag::FileResult;
+    use typst::foundations::{Bytes, Datetime};
+    use typst::syntax::{FileId, Source};
+    use typst::text::{Font, FontBook};
+    use typst::utils::LazyHash;
+    use typst::{Library, LibraryExt, World};
+    use typst_kit::fonts::{FontSearcher, FontSlot, Fonts};
+
     pub struct SimpleWorld {
-        pub root: PathBuf,
-        pub main_source: String,
-        pub font_paths: Vec<PathBuf>,
+        library: LazyHash<Library>,
+        book: LazyHash<FontBook>,
+        fonts: Vec<FontSlot>,
+        main_source: Source,
+        root: Option<PathBuf>,
+        sources: Mutex<HashMap<FileId, Source>>,
+    }
+
+    impl SimpleWorld {
+        pub fn new(
+            text: &str,
+            root: Option<PathBuf>,
+            font_paths: &[PathBuf],
+        ) -> Self {
+            let font_result: Fonts = FontSearcher::new()
+                .include_system_fonts(true)
+                .include_embedded_fonts(true)
+                .search_with(font_paths);
+
+            let main_source = Source::detached(text);
+
+            SimpleWorld {
+                library: LazyHash::new(Library::default()),
+                book: LazyHash::new(font_result.book),
+                fonts: font_result.fonts,
+                main_source,
+                root,
+                sources: Mutex::new(HashMap::new()),
+            }
+        }
+
+        /// Resolve a FileId to a real filesystem path using the root.
+        fn resolve_path(&self, id: FileId) -> FileResult<PathBuf> {
+            if id.package().is_some() {
+                return Err(typst::diag::FileError::Package(
+                    typst::diag::PackageError::Other(Some(
+                        ecow::eco_format!("package imports are not supported"),
+                    )),
+                ));
+            }
+            let root = self.root.as_deref().unwrap_or_else(|| Path::new("."));
+            id.vpath()
+                .resolve(root)
+                .ok_or(typst::diag::FileError::AccessDenied)
+        }
+    }
+
+    impl World for SimpleWorld {
+        fn library(&self) -> &LazyHash<Library> {
+            &self.library
+        }
+
+        fn book(&self) -> &LazyHash<FontBook> {
+            &self.book
+        }
+
+        fn main(&self) -> FileId {
+            self.main_source.id()
+        }
+
+        fn source(&self, id: FileId) -> FileResult<Source> {
+            if id == self.main_source.id() {
+                return Ok(self.main_source.clone());
+            }
+
+            // Check cache
+            {
+                let sources = self.sources.lock().unwrap();
+                if let Some(source) = sources.get(&id) {
+                    return Ok(source.clone());
+                }
+            }
+
+            // Load from disk
+            let path = self.resolve_path(id)?;
+            let text = fs::read_to_string(&path)
+                .map_err(|e| typst::diag::FileError::from_io(e, &path))?;
+            let source = Source::new(id, text);
+
+            let mut sources = self.sources.lock().unwrap();
+            sources.insert(id, source.clone());
+            Ok(source)
+        }
+
+        fn file(&self, id: FileId) -> FileResult<Bytes> {
+            let path = self.resolve_path(id)?;
+            let data = fs::read(&path)
+                .map_err(|e| typst::diag::FileError::from_io(e, &path))?;
+            Ok(Bytes::new(data))
+        }
+
+        fn font(&self, index: usize) -> Option<Font> {
+            self.fonts.get(index).and_then(|slot| slot.get())
+        }
+
+        fn today(&self, offset: Option<i64>) -> Option<Datetime> {
+            let now = chrono::Local::now();
+            if let Some(_offset) = offset {
+                let utc = now.naive_utc();
+                Datetime::from_ymd_hms(
+                    utc.year(),
+                    utc.month() as u8,
+                    utc.day() as u8,
+                    utc.hour() as u8,
+                    utc.minute() as u8,
+                    utc.second() as u8,
+                )
+            } else {
+                let local = now.naive_local();
+                Datetime::from_ymd_hms(
+                    local.year(),
+                    local.month() as u8,
+                    local.day() as u8,
+                    local.hour() as u8,
+                    local.minute() as u8,
+                    local.second() as u8,
+                )
+            }
+        }
     }
 }
 
@@ -499,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_stub() {
+    fn compile_simple_source() {
         unsafe {
             let compiler = typst_compiler_new();
             let source = b"Hello, world!";

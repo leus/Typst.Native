@@ -23,20 +23,44 @@
     Copy the correct native library to the output directory when consumed as a
     project reference (local dev / CI). When consumed as a NuGet package, the
     Typst.Native.Runtime.targets file handles this instead.
+
+    Architecture is detected at build time so this works correctly on both
+    x64 and arm64 machines.
   -->
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND '$([MSBuild]::IsOSPlatform(Windows))' == 'true'">
+  <PropertyGroup>
+    <_NativeArch>$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)</_NativeArch>
+  </PropertyGroup>
+
+  <!-- Windows -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows')) AND '$(_NativeArch)' == 'X64'">
     <None Include="..\Typst.Native.Runtime\runtimes\win-x64\native\*"
           CopyToOutputDirectory="PreserveNewest"
           Link="%(Filename)%(Extension)" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND '$([MSBuild]::IsOSPlatform(Linux))' == 'true'">
+  <!-- Linux x64 -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Linux')) AND '$(_NativeArch)' == 'X64'">
     <None Include="..\Typst.Native.Runtime\runtimes\linux-x64\native\*"
           CopyToOutputDirectory="PreserveNewest"
           Link="%(Filename)%(Extension)" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND '$([MSBuild]::IsOSPlatform(OSX))' == 'true'">
+  <!-- Linux arm64 -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Linux')) AND '$(_NativeArch)' == 'Arm64'">
+    <None Include="..\Typst.Native.Runtime\runtimes\linux-arm64\native\*"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- macOS x64 -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')) AND '$(_NativeArch)' == 'X64'">
+    <None Include="..\Typst.Native.Runtime\runtimes\osx-x64\native\*"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- macOS arm64 -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')) AND '$(_NativeArch)' == 'Arm64'">
     <None Include="..\Typst.Native.Runtime\runtimes\osx-arm64\native\*"
           CopyToOutputDirectory="PreserveNewest"
           Link="%(Filename)%(Extension)" />
