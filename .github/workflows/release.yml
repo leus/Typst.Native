@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"          # Triggered by pushing a version tag, e.g. v0.1.0
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write   # For creating GitHub Releases
+  id-token: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build native libraries for every platform
+  # ---------------------------------------------------------------------------
+  native:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib: libtypst_ffi.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib: libtypst_ffi.so
+          - os: macos-latest
+            rid: osx-x64
+            lib: libtypst_ffi.dylib
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            rid: osx-arm64
+            lib: libtypst_ffi.dylib
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            rid: win-x64
+            lib: typst_ffi.dll
+
+    runs-on: ${{ matrix.os }}
+    name: Native (${{ matrix.rid }})
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target || '' }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            native/typst-ffi/target/
+          key: cargo-${{ matrix.rid }}-${{ hashFiles('native/typst-ffi/Cargo.toml') }}
+          restore-keys: cargo-${{ matrix.rid }}-
+
+      - name: Build native library (release)
+        working-directory: native/typst-ffi
+        run: cargo build --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.rid }}
+          path: native/typst-ffi/target/${{ matrix.target && format('{0}/release', matrix.target) || 'release' }}/${{ matrix.lib }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Pack and publish NuGet packages
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: native
+    runs-on: ubuntu-latest
+    name: Publish NuGet
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts/native
+
+      - name: Arrange native binaries
+        run: |
+          for rid in win-x64 linux-x64 linux-arm64 osx-x64 osx-arm64; do
+            mkdir -p src/Typst.Native.Runtime/runtimes/$rid/native
+            cp artifacts/native/native-$rid/* src/Typst.Native.Runtime/runtimes/$rid/native/
+          done
+
+      # Extract version from tag (e.g. v0.1.0 → 0.1.0)
+      - name: Determine version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Pack
+        run: |
+          dotnet pack src/Typst.Native.Runtime/Typst.Native.Runtime.csproj \
+            -c Release \
+            -o artifacts/packages \
+            -p:PackageVersion=${{ steps.version.outputs.VERSION }}
+
+          dotnet pack src/Typst.Native/Typst.Native.csproj \
+            -c Release \
+            -o artifacts/packages \
+            -p:PackageVersion=${{ steps.version.outputs.VERSION }}
+
+      # Get a short-lived NuGet API key
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+    
+      # Push the package
+      - name: Push to NuGet.org
+        run: |
+          dotnet nuget push "artifacts/packages/*.nupkg" \
+            --api-key ${{steps.login.outputs.NUGET_API_KEY}} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/packages/*

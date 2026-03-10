@@ -1,0 +1,87 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust dependency audit (RustSec Advisory Database)
+  # ---------------------------------------------------------------------------
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        working-directory: native/typst-ffi
+        run: cargo audit
+
+  # ---------------------------------------------------------------------------
+  # Rust supply-chain checks (licenses, bans, advisories, sources)
+  # ---------------------------------------------------------------------------
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: native/typst-ffi/Cargo.toml
+
+  # ---------------------------------------------------------------------------
+  # .NET dependency vulnerability scan
+  # ---------------------------------------------------------------------------
+  dotnet-audit:
+    name: .NET Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Restore packages
+        run: dotnet restore
+
+      - name: Check for vulnerable packages
+        run: |
+          echo "::group::Typst.Native"
+          dotnet list src/Typst.Native/Typst.Native.csproj package --vulnerable --include-transitive
+          echo "::endgroup::"
+
+          echo "::group::Typst.Native.Tests"
+          dotnet list src/Typst.Native.Tests/Typst.Native.Tests.csproj package --vulnerable --include-transitive
+          echo "::endgroup::"
+
+      - name: Fail on vulnerable packages
+        run: |
+          OUTPUT=$(dotnet list package --vulnerable --include-transitive 2>&1)
+          if echo "$OUTPUT" | grep -qi "has the following vulnerable packages"; then
+            echo "::error::Vulnerable NuGet packages detected!"
+            echo "$OUTPUT"
+            exit 1
+          fi
+          echo "No vulnerable packages found."

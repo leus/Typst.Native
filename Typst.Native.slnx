@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Typst.Native.Runtime/Typst.Native.Runtime.csproj" />
+    <Project Path="src/Typst.Native.Tests/Typst.Native.Tests.csproj" />
+    <Project Path="src/Typst.Native/Typst.Native.csproj" />
+  </Folder>
+</Solution>

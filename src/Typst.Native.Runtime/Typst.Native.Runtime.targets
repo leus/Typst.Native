@@ -1,0 +1,28 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    MSBuild targets for Typst.Native.Runtime.
+    Ensures the correct native library is copied to the consumer's output directory.
+  -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND '$([MSBuild]::IsOSPlatform(Windows))' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\*"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND '$([MSBuild]::IsOSPlatform(Linux))' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\linux-x64\native\*"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND '$([MSBuild]::IsOSPlatform(OSX))' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\osx-arm64\native\*"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!--
+    When a RuntimeIdentifier is set (e.g. dotnet publish -r win-x64),
+    the .NET SDK automatically resolves from the runtimes/ folder.
+  -->
+</Project>

@@ -1,0 +1,49 @@
+# =========================
+# .NET
+# =========================
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+*.csproj.user
+.vs/
+TestResults/
+*.nupkg
+*.snupkg
+
+# =========================
+# Rust
+# =========================
+native/typst-ffi/target/
+**/*.rs.bk
+Cargo.lock
+
+# =========================
+# IDE
+# =========================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Build outputs
+# =========================
+artifacts/
+dist/
+publish/
+
+# =========================
+# Native binaries (built by CI, not checked in)
+# =========================
+src/Typst.Native.Runtime/runtimes/

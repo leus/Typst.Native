@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Package metadata -->
+    <Authors>Typst.Native contributors</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/leus/Typst.Native</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/leus/Typst.Native</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>typst;typesetting;pdf;svg;interop;native</PackageTags>
+    <Description>
+      Compile Typst documents to PDF, SVG, and PNG directly from .NET without external dependencies.
+    </Description>
+
+    <!-- Versioning -->
+    <VersionPrefix>0.1.0</VersionPrefix>
+  </PropertyGroup>
+</Project>

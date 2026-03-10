@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.Build.NoTargets/3.7.56">
+
+  <PropertyGroup>
+    <PackageId>Typst.Native.Runtime</PackageId>
+    <TargetFramework>net8.0</TargetFramework>
+    <Description>
+      Pre-built native libraries for Typst.Native. This package contains the
+      typst_ffi shared library for Windows (x64), Linux (x64, arm64), and
+      macOS (x64, arm64). Referenced automatically by the Typst.Native package.
+    </Description>
+
+    <!--
+      This project doesn't produce a managed assembly — it exists solely
+      to pack native binaries into a NuGet package under the runtimes/
+      convention. The Microsoft.Build.NoTargets SDK skips compilation.
+    -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <NoDefaultExcludes>true</NoDefaultExcludes>
+  </PropertyGroup>
+
+  <!--
+    Native binaries are placed here by CI. The folder structure follows the
+    .NET RID convention:
+      runtimes/win-x64/native/typst_ffi.dll
+      runtimes/linux-x64/native/libtypst_ffi.so
+      runtimes/linux-arm64/native/libtypst_ffi.so
+      runtimes/osx-x64/native/libtypst_ffi.dylib
+      runtimes/osx-arm64/native/libtypst_ffi.dylib
+  -->
+  <ItemGroup>
+    <Content Include="runtimes/**/*" PackagePath="runtimes" Pack="true">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!--
+    Build targets to copy the correct native binary to the output directory
+    of referencing projects.
+  -->
+  <ItemGroup>
+    <None Include="Typst.Native.Runtime.targets" PackagePath="build" Pack="true" />
+    <None Include="Typst.Native.Runtime.targets" PackagePath="buildTransitive" Pack="true" />
+  </ItemGroup>
+
+</Project>

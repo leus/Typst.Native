@@ -1,0 +1,52 @@
+# cargo-deny configuration (v0.18+ schema)
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Check all crates including transitive dependencies
+all-features = true
+
+[advisories]
+# Check all crates (workspace + transitive) for known vulnerabilities
+version = 2
+# Ignore unmaintained advisories for transitive dependencies pulled in by Typst
+# that we cannot control. These are not security vulnerabilities.
+ignore = [
+    "RUSTSEC-2025-0141", # bincode — considered complete by maintainers
+    "RUSTSEC-2024-0436", # paste — transitive dep from Typst
+    "RUSTSEC-2024-0320", # yaml-rust — transitive dep from Typst
+]
+
+[licenses]
+version = 2
+# Allow these licenses (Typst is Apache-2.0; our crate is MIT)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "CC0-1.0",
+]
+# Confidence threshold for detecting a license from a file
+confidence-threshold = 0.8
+
+[bans]
+# Lint level for multiple versions of the same crate
+multiple-versions = "warn"
+# Lint level for wildcard dependencies
+wildcards = "allow"
+
+[sources]
+# Lint level for crates not from an allowed source
+unknown-registry = "deny"
+unknown-git = "deny"
+# Only allow crates from crates.io
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
