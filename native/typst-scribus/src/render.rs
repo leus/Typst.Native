@@ -251,7 +251,9 @@ impl SlaRenderer {
         let x = pos.x.to_pt();
         let y = pos.y.to_pt();
         let font_size = text.size.to_pt();
-        let width = text.width().to_pt();
+        // Scribus re-shapes text with its own engine, so glyph advances may differ
+        // slightly from Typst's. Add a small buffer to prevent clipping/wrapping.
+        let width = text.width().to_pt() + 2.0;
         let height = font_size * 1.4;
 
         let frame_y = y - font_size;
