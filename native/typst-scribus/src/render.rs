@@ -258,7 +258,14 @@ impl SlaRenderer {
 
         let fill_color = SlaColor::from_paint(&text.fill);
         let color_name = self.register_color(&fill_color);
-        let font_family = text.font.info().family.to_string();
+
+        // Scribus names fonts as "Family Subfamily" using name table IDs 1 + 2
+        // (e.g. "EB Garamond Medium Italic", "Arial Regular", "Adobe Caslon Pro Regular")
+        let font_family = match (text.font.find_name(1), text.font.find_name(2)) {
+            (Some(fam), Some(sub)) => format!("{fam} {sub}"),
+            (Some(fam), None) => fam,
+            _ => text.font.info().family.to_string(),
+        };
 
         let (cx, cy) = self.to_canvas(x, frame_y, page_ypos);
 
