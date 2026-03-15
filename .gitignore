@@ -47,3 +47,5 @@ publish/
 # Native binaries (built by CI, not checked in)
 # =========================
 src/Typst.Native.Runtime/runtimes/
+native/typst-scribus/target/
+

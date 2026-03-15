@@ -109,6 +109,16 @@ internal static partial class NativeMethods
         out byte* data,
         out int len);
 
+    /// <summary>
+    /// Get the Scribus SLA output. <paramref name="data"/> points into the
+    /// result's internal buffer (valid until <see cref="typst_result_free"/>).
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern unsafe int typst_result_get_sla(
+        IntPtr result,
+        out byte* data,
+        out int len);
+
     // -----------------------------------------------------------------------
     // Diagnostics
     // -----------------------------------------------------------------------

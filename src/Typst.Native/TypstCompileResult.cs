@@ -121,6 +121,51 @@ public sealed class TypstCompileResult : IDisposable
     }
 
     /// <summary>
+    /// Gets the compiled output as a Scribus SLA (XML) string.
+    /// </summary>
+    /// <returns>The full SLA document as a string.</returns>
+    /// <exception cref="TypstException">
+    /// Thrown if the compilation failed or the SLA could not be retrieved.
+    /// </exception>
+    public unsafe string ToSla()
+    {
+        ThrowIfDisposed();
+        EnsureSuccess();
+
+        byte* data;
+        int len;
+        int rc = NativeMethods.typst_result_get_sla(
+            _handle!.DangerousGetHandle(), out data, out len);
+
+        ThrowOnError(rc, "Failed to retrieve SLA output");
+
+        return Encoding.UTF8.GetString(data, len);
+    }
+
+    /// <summary>
+    /// Gets the compiled output as a Scribus SLA and writes it to a stream.
+    /// </summary>
+    /// <param name="stream">The stream to write the SLA to.</param>
+    /// <exception cref="TypstException">
+    /// Thrown if the compilation failed or the SLA could not be retrieved.
+    /// </exception>
+    public unsafe void WriteSlaTo(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ThrowIfDisposed();
+        EnsureSuccess();
+
+        byte* data;
+        int len;
+        int rc = NativeMethods.typst_result_get_sla(
+            _handle!.DangerousGetHandle(), out data, out len);
+
+        ThrowOnError(rc, "Failed to retrieve SLA output");
+
+        stream.Write(new ReadOnlySpan<byte>(data, len));
+    }
+
+    /// <summary>
     /// Gets all diagnostics (errors and warnings) from the compilation.
     /// Returns an empty list for successful compilations.
     /// </summary>

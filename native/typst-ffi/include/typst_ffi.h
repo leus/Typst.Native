@@ -137,6 +137,24 @@ int32_t typst_result_get_svg_page(const struct typst_TypstCompileResult *result,
                                   int32_t *len);
 
 /**
+ * Get the Scribus SLA (XML) output.
+ *
+ * On success, `*data` and `*len` are set to the UTF-8 SLA string. The buffer
+ * is owned by the result and remains valid until `typst_result_free` is called.
+ *
+ * Returns `TYPST_OK` on success, `TYPST_ERR_COMPILE_FAILED` if the result
+ * is a failure.
+ *
+ * # Safety
+ * All pointers must be valid. The returned `*data` pointer must not be used
+ * after `typst_result_free`.
+ */
+TYPST_API
+int32_t typst_result_get_sla(const struct typst_TypstCompileResult *result,
+                             const uint8_t **data,
+                             int32_t *len);
+
+/**
  * Get the number of diagnostics in a failed compilation result.
  *
  * Returns `0` for successful results or null pointers.

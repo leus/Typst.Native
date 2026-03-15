@@ -42,6 +42,8 @@ enum CompileResultKind {
         pdf: Vec<u8>,
         /// SVG strings per page produced by `typst-svg`.
         svg_pages: Vec<String>,
+        /// SLA (Scribus) XML produced by `typst-scribus`.
+        sla: String,
         /// Total number of pages in the compiled document.
         page_count: i32,
     },
@@ -215,6 +217,7 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
     use typst::diag::{Severity, Warned};
     use typst::layout::PagedDocument;
     use typst_pdf::PdfOptions;
+    use typst_scribus::SlaOptions;
 
     let world = world::SimpleWorld::new(
         source,
@@ -256,12 +259,16 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
                 .map(|page| typst_svg::svg(page))
                 .collect();
 
+            // Export to Scribus SLA
+            let sla = typst_scribus::sla(&document, &SlaOptions::default());
+
             let page_count = document.pages.len() as i32;
 
             TypstCompileResult {
                 kind: CompileResultKind::Success {
                     pdf,
                     svg_pages,
+                    sla,
                     page_count,
                 },
             }
@@ -393,6 +400,36 @@ pub unsafe extern "C" fn typst_result_get_svg_page(
             let svg = &svg_pages[page as usize];
             *data = svg.as_ptr();
             *len = svg.len() as i32;
+            TYPST_OK
+        }
+        CompileResultKind::Failure { .. } => TYPST_ERR_COMPILE_FAILED,
+    }
+}
+
+/// Get the Scribus SLA (XML) output.
+///
+/// On success, `*data` and `*len` are set to the UTF-8 SLA string. The buffer
+/// is owned by the result and remains valid until `typst_result_free` is called.
+///
+/// Returns `TYPST_OK` on success, `TYPST_ERR_COMPILE_FAILED` if the result
+/// is a failure.
+///
+/// # Safety
+/// All pointers must be valid. The returned `*data` pointer must not be used
+/// after `typst_result_free`.
+#[no_mangle]
+pub unsafe extern "C" fn typst_result_get_sla(
+    result: *const TypstCompileResult,
+    data: *mut *const u8,
+    len: *mut i32,
+) -> i32 {
+    if result.is_null() || data.is_null() || len.is_null() {
+        return TYPST_ERR_NULL_POINTER;
+    }
+    match &(*result).kind {
+        CompileResultKind::Success { sla, .. } => {
+            *data = sla.as_ptr();
+            *len = sla.len() as i32;
             TYPST_OK
         }
         CompileResultKind::Failure { .. } => TYPST_ERR_COMPILE_FAILED,

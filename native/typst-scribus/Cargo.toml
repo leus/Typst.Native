@@ -1,0 +1,17 @@
+[package]
+name = "typst-scribus"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Scribus SLA exporter for Typst documents"
+
+[lib]
+name = "typst_scribus"
+path = "src/lib.rs"
+
+[dependencies]
+typst-library = "0.14"
+ecow = "0.2"
+xmlwriter = "0.1"
+base64 = "0.22"
