@@ -679,7 +679,7 @@ pub unsafe extern "C" fn typst_buffer_free(buffer: *mut TypstBuffer) {
 #[no_mangle]
 pub extern "C" fn typst_version() -> *const c_char {
     // SAFETY: The byte string is null-terminated and lives for 'static.
-    b"0.2.0\0".as_ptr() as *const c_char
+    b"0.3.0\0".as_ptr() as *const c_char
 }
 
 // ===========================================================================
