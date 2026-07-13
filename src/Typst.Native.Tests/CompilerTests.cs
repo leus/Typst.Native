@@ -70,6 +70,67 @@ public class CompilerTests : IDisposable
     }
 
     [Fact]
+    public void RenderPng_SimpleMarkup_ProducesPngBytes()
+    {
+        using var result = _compiler.Compile("Hello from PNG!");
+
+        Assert.True(result.IsSuccess);
+
+        byte[] png = result.RenderPng(0);
+        Assert.True(png.Length > 8);
+
+        // PNG files start with the magic bytes 0x89 "PNG"
+        Assert.Equal(0x89, png[0]);
+        Assert.Equal((byte)'P', png[1]);
+        Assert.Equal((byte)'N', png[2]);
+        Assert.Equal((byte)'G', png[3]);
+    }
+
+    [Fact]
+    public void RenderPng_PageOutOfRange_Throws()
+    {
+        using var result = _compiler.Compile("test");
+        Assert.True(result.IsSuccess);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => result.RenderPng(-1));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => result.RenderPng(result.PageCount));
+    }
+
+    [Fact]
+    public void RenderPng_InvalidScale_Throws()
+    {
+        using var result = _compiler.Compile("test");
+        Assert.True(result.IsSuccess);
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => result.RenderPng(0, 0f));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => result.RenderPng(0, float.NaN));
+    }
+
+    [Fact]
+    public void RenderPng_OnFailedResult_Throws()
+    {
+        using var result = _compiler.Compile("#image(\"missing.png\")");
+        Assert.False(result.IsSuccess);
+
+        Assert.Throws<TypstException>(() => result.RenderPng(0));
+    }
+
+    [Fact]
+    public void Compile_WritePngToStream()
+    {
+        using var result = _compiler.Compile("PNG stream test.");
+        Assert.True(result.IsSuccess);
+
+        using var ms = new MemoryStream();
+        result.WritePngTo(ms, 0);
+
+        Assert.True(ms.Length > 0);
+    }
+
+    [Fact]
     public void Compile_WritePdfToStream()
     {
         using var result = _compiler.Compile("Stream test.");

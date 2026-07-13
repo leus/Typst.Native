@@ -40,6 +40,33 @@ else
 }
 ```
 
+### Images and virtual files
+
+Supply in-memory files — images, data files, or `.typ` modules — that your
+Typst source can reference by path:
+
+```csharp
+using var compiler = new TypstCompiler();
+compiler.AddFile("logo.png", File.ReadAllBytes("logo.png"));
+
+using var result = compiler.Compile("#image(\"logo.png\")");
+```
+
+Typst accepts PNG, JPEG, GIF, WebP, SVG, and PDF as `#image` sources. Files on
+disk also work when a root directory is set via `SetRoot` (or implicitly by
+`CompileFile`); virtual files added with `AddFile` take precedence over disk
+and persist until `ClearFiles()` is called or the compiler is disposed.
+
+### PNG rendering
+
+Render any page of a successful compilation to a PNG image:
+
+```csharp
+using var result = compiler.Compile("Hello, PNG!");
+byte[] png = result.RenderPng(pageIndex: 0, pixelsPerPoint: 2.0f); // 2.0 ≈ 144 DPI
+File.WriteAllBytes("page1.png", png);
+```
+
 ## Supported Platforms
 
 | Runtime         | NuGet RID         | CI Runner                          |

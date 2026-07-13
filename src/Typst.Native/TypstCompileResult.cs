@@ -5,7 +5,8 @@ namespace Typst.Native;
 
 /// <summary>
 /// Represents the result of a Typst compilation. Provides access to the
-/// compiled output (PDF, SVG) or diagnostic information if compilation failed.
+/// compiled output (PDF, SVG, PNG, SLA) or diagnostic information if
+/// compilation failed.
 /// </summary>
 /// <remarks>
 /// This object holds a reference to native memory. Dispose it when you are
@@ -118,6 +119,73 @@ public sealed class TypstCompileResult : IDisposable
         ThrowOnError(rc, $"Failed to retrieve SVG for page {pageIndex}");
 
         return Encoding.UTF8.GetString(data, len);
+    }
+
+    /// <summary>
+    /// Renders a page to a PNG image.
+    /// </summary>
+    /// <param name="pageIndex">The 0-based page index.</param>
+    /// <param name="pixelsPerPoint">
+    /// The resolution as pixels per typographic point. The default of
+    /// <c>2.0</c> corresponds to 144 DPI (the Typst CLI default).
+    /// </param>
+    /// <returns>A new byte array containing the PNG image.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown if <paramref name="pageIndex"/> is out of range or
+    /// <paramref name="pixelsPerPoint"/> is not a positive finite number.
+    /// </exception>
+    /// <exception cref="TypstException">
+    /// Thrown if the compilation failed or PNG encoding failed.
+    /// </exception>
+    public unsafe byte[] RenderPng(int pageIndex, float pixelsPerPoint = 2.0f)
+    {
+        ThrowIfDisposed();
+        EnsureSuccess();
+
+        if (pageIndex < 0 || pageIndex >= PageCount)
+            throw new ArgumentOutOfRangeException(nameof(pageIndex));
+        if (!float.IsFinite(pixelsPerPoint) || pixelsPerPoint <= 0f)
+            throw new ArgumentOutOfRangeException(
+                nameof(pixelsPerPoint), "Scale must be a positive finite number.");
+
+        int rc = NativeMethods.typst_result_render_png(
+            _handle!.DangerousGetHandle(), pageIndex, pixelsPerPoint, out IntPtr buffer);
+
+        ThrowOnError(rc, $"Failed to render PNG for page {pageIndex}");
+
+        try
+        {
+            rc = NativeMethods.typst_buffer_get_data(buffer, out byte* data, out int len);
+            ThrowOnError(rc, "Failed to read PNG buffer");
+
+            // Copy the data out so the caller owns it independently.
+            var png = new byte[len];
+            new ReadOnlySpan<byte>(data, len).CopyTo(png);
+            return png;
+        }
+        finally
+        {
+            NativeMethods.typst_buffer_free(buffer);
+        }
+    }
+
+    /// <summary>
+    /// Renders a page to PNG and writes it to a stream.
+    /// </summary>
+    /// <param name="stream">The stream to write the PNG to.</param>
+    /// <param name="pageIndex">The 0-based page index.</param>
+    /// <param name="pixelsPerPoint">
+    /// The resolution as pixels per typographic point (2.0 ≈ 144 DPI).
+    /// </param>
+    /// <exception cref="TypstException">
+    /// Thrown if the compilation failed or PNG encoding failed.
+    /// </exception>
+    public void WritePngTo(Stream stream, int pageIndex, float pixelsPerPoint = 2.0f)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+
+        byte[] png = RenderPng(pageIndex, pixelsPerPoint);
+        stream.Write(png, 0, png.Length);
     }
 
     /// <summary>

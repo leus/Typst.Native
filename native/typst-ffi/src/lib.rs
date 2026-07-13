@@ -13,11 +13,15 @@
 //! - **Thread safety**: Each `TypstCompiler` handle is `Send` but not `Sync` —
 //!   use one compiler per thread or synchronize access on the C# side.
 
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::slice;
 
+use typst::foundations::Bytes;
+use typst::layout::PagedDocument;
+use typst::syntax::VirtualPath;
 use typst::World;
 
 // ---------------------------------------------------------------------------
@@ -28,6 +32,8 @@ use typst::World;
 pub struct TypstCompiler {
     root: Option<PathBuf>,
     font_paths: Vec<PathBuf>,
+    /// In-memory files keyed by normalized rooted virtual path.
+    files: HashMap<VirtualPath, Bytes>,
 }
 
 /// Opaque compilation result handle.
@@ -46,6 +52,8 @@ enum CompileResultKind {
         sla: String,
         /// Total number of pages in the compiled document.
         page_count: i32,
+        /// The compiled document, kept alive for on-demand PNG rendering.
+        document: PagedDocument,
     },
     Failure {
         diagnostics: Vec<TypstDiagnosticEntry>,
@@ -60,7 +68,6 @@ struct TypstDiagnosticEntry {
 }
 
 /// A buffer returned to the caller that must be freed with `typst_buffer_free`.
-#[allow(dead_code)]
 pub struct TypstBuffer {
     data: Vec<u8>,
 }
@@ -74,7 +81,7 @@ const TYPST_ERR_NULL_POINTER: i32 = -1;
 const TYPST_ERR_INVALID_UTF8: i32 = -2;
 const TYPST_ERR_COMPILE_FAILED: i32 = -3;
 const TYPST_ERR_PAGE_OUT_OF_RANGE: i32 = -4;
-#[allow(dead_code)]
+const TYPST_ERR_INVALID_ARGUMENT: i32 = -5;
 const TYPST_ERR_INTERNAL: i32 = -99;
 
 // ===========================================================================
@@ -90,6 +97,7 @@ pub extern "C" fn typst_compiler_new() -> *mut TypstCompiler {
     let compiler = Box::new(TypstCompiler {
         root: None,
         font_paths: Vec::new(),
+        files: HashMap::new(),
     });
     Box::into_raw(compiler)
 }
@@ -150,6 +158,70 @@ pub unsafe extern "C" fn typst_compiler_add_font_path(
         }
         Err(_) => TYPST_ERR_INVALID_UTF8,
     }
+}
+
+/// Register an in-memory file that Typst source can reference by path,
+/// e.g. `#image("logo.png")` or `#import "helper.typ"`.
+///
+/// `path` is a virtual path rooted at the compilation root (`"logo.png"` and
+/// `"/logo.png"` are equivalent). Backslashes are treated as path separators
+/// on every platform. Re-adding the same path overwrites the previous data.
+/// Virtual files take precedence over files on disk and persist until the
+/// compiler is freed or `typst_compiler_clear_files` is called.
+///
+/// `data` may be null only if `data_len` is `0` (registers an empty file).
+///
+/// # Safety
+/// `compiler` must be a valid handle. `path` must be a valid null-terminated
+/// UTF-8 string. `data` must point to `data_len` valid bytes (or be null when
+/// `data_len` is `0`).
+#[no_mangle]
+pub unsafe extern "C" fn typst_compiler_add_file(
+    compiler: *mut TypstCompiler,
+    path: *const c_char,
+    data: *const u8,
+    data_len: i32,
+) -> i32 {
+    if compiler.is_null() || path.is_null() {
+        return TYPST_ERR_NULL_POINTER;
+    }
+    if data_len < 0 || (data.is_null() && data_len > 0) {
+        return TYPST_ERR_INVALID_ARGUMENT;
+    }
+    let compiler = &mut *compiler;
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => return TYPST_ERR_INVALID_UTF8,
+    };
+    // Backslashes are separators only on Windows — normalize so virtual
+    // paths behave identically everywhere.
+    let normalized = path_str.replace('\\', "/");
+    let vpath = VirtualPath::new(normalized.as_str());
+    // Reject paths that normalize to the bare root ("", ".", "/").
+    if vpath.as_rootless_path().as_os_str().is_empty() {
+        return TYPST_ERR_INVALID_ARGUMENT;
+    }
+    let bytes = if data_len == 0 {
+        Vec::new()
+    } else {
+        slice::from_raw_parts(data, data_len as usize).to_vec()
+    };
+    compiler.files.insert(vpath, Bytes::new(bytes));
+    TYPST_OK
+}
+
+/// Remove all in-memory files previously registered with
+/// `typst_compiler_add_file`.
+///
+/// # Safety
+/// `compiler` must be a valid handle.
+#[no_mangle]
+pub unsafe extern "C" fn typst_compiler_clear_files(compiler: *mut TypstCompiler) -> i32 {
+    if compiler.is_null() {
+        return TYPST_ERR_NULL_POINTER;
+    }
+    (*compiler).files.clear();
+    TYPST_OK
 }
 
 // ===========================================================================
@@ -215,7 +287,6 @@ pub unsafe extern "C" fn typst_compile(
 /// unsafe code minimal.
 fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
     use typst::diag::{Severity, Warned};
-    use typst::layout::PagedDocument;
     use typst_pdf::PdfOptions;
     use typst_scribus::SlaOptions;
 
@@ -223,6 +294,7 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
         source,
         compiler.root.clone(),
         &compiler.font_paths,
+        compiler.files.clone(),
     );
 
     let Warned { output, warnings: _ } =
@@ -270,6 +342,7 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
                     svg_pages,
                     sla,
                     page_count,
+                    document,
                 },
             }
         }
@@ -436,6 +509,73 @@ pub unsafe extern "C" fn typst_result_get_sla(
     }
 }
 
+/// Render one page (0-indexed) to PNG at the given scale.
+///
+/// `pixels_per_pt` controls the resolution: `2.0` ≈ 144 DPI (the Typst CLI
+/// default). On success, `*out_buffer` receives a buffer handle that must be
+/// freed with `typst_buffer_free`; read its contents via
+/// `typst_buffer_get_data`.
+///
+/// Returns `TYPST_OK` on success, `TYPST_ERR_COMPILE_FAILED` if the result is
+/// a failure, `TYPST_ERR_PAGE_OUT_OF_RANGE` for a bad page index,
+/// `TYPST_ERR_INVALID_ARGUMENT` for a non-finite or non-positive scale, and
+/// `TYPST_ERR_INTERNAL` if PNG encoding fails.
+///
+/// # Safety
+/// All pointers must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn typst_result_render_png(
+    result: *const TypstCompileResult,
+    page: i32,
+    pixels_per_pt: f32,
+    out_buffer: *mut *mut TypstBuffer,
+) -> i32 {
+    if result.is_null() || out_buffer.is_null() {
+        return TYPST_ERR_NULL_POINTER;
+    }
+    if !pixels_per_pt.is_finite() || pixels_per_pt <= 0.0 {
+        return TYPST_ERR_INVALID_ARGUMENT;
+    }
+    match &(*result).kind {
+        CompileResultKind::Success { document, .. } => {
+            if page < 0 || page as usize >= document.pages.len() {
+                return TYPST_ERR_PAGE_OUT_OF_RANGE;
+            }
+            let pixmap = typst_render::render(&document.pages[page as usize], pixels_per_pt);
+            match pixmap.encode_png() {
+                Ok(data) => {
+                    *out_buffer = Box::into_raw(Box::new(TypstBuffer { data }));
+                    TYPST_OK
+                }
+                Err(_) => TYPST_ERR_INTERNAL,
+            }
+        }
+        CompileResultKind::Failure { .. } => TYPST_ERR_COMPILE_FAILED,
+    }
+}
+
+/// Get a pointer to a buffer's data.
+///
+/// `*data` and `*len` are set to the buffer contents. The pointer is owned by
+/// the buffer and remains valid until `typst_buffer_free` is called.
+///
+/// # Safety
+/// All pointers must be valid. The returned `*data` pointer must not be used
+/// after `typst_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn typst_buffer_get_data(
+    buffer: *const TypstBuffer,
+    data: *mut *const u8,
+    len: *mut i32,
+) -> i32 {
+    if buffer.is_null() || data.is_null() || len.is_null() {
+        return TYPST_ERR_NULL_POINTER;
+    }
+    *data = (*buffer).data.as_ptr();
+    *len = (*buffer).data.len() as i32;
+    TYPST_OK
+}
+
 // ===========================================================================
 // Diagnostics
 // ===========================================================================
@@ -539,7 +679,7 @@ pub unsafe extern "C" fn typst_buffer_free(buffer: *mut TypstBuffer) {
 #[no_mangle]
 pub extern "C" fn typst_version() -> *const c_char {
     // SAFETY: The byte string is null-terminated and lives for 'static.
-    b"0.1.1\0".as_ptr() as *const c_char
+    b"0.1.2\0".as_ptr() as *const c_char
 }
 
 // ===========================================================================
@@ -557,7 +697,7 @@ mod world {
     use chrono::{Datelike, Timelike};
     use typst::diag::FileResult;
     use typst::foundations::{Bytes, Datetime};
-    use typst::syntax::{FileId, Source};
+    use typst::syntax::{FileId, Source, VirtualPath};
     use typst::text::{Font, FontBook};
     use typst::utils::LazyHash;
     use typst::{Library, LibraryExt, World};
@@ -570,6 +710,8 @@ mod world {
         main_source: Source,
         root: Option<PathBuf>,
         sources: Mutex<HashMap<FileId, Source>>,
+        /// In-memory files; take precedence over files on disk.
+        files: HashMap<VirtualPath, Bytes>,
     }
 
     impl SimpleWorld {
@@ -577,6 +719,7 @@ mod world {
             text: &str,
             root: Option<PathBuf>,
             font_paths: &[PathBuf],
+            files: HashMap<VirtualPath, Bytes>,
         ) -> Self {
             let font_result: Fonts = FontSearcher::new()
                 .include_system_fonts(true)
@@ -592,6 +735,7 @@ mod world {
                 main_source,
                 root,
                 sources: Mutex::new(HashMap::new()),
+                files,
             }
         }
 
@@ -637,10 +781,29 @@ mod world {
                 }
             }
 
-            // Load from disk
-            let path = self.resolve_path(id)?;
-            let text = fs::read_to_string(&path)
-                .map_err(|e| typst::diag::FileError::from_io(e, &path))?;
+            // Virtual files take precedence over disk.
+            let virtual_text = if id.package().is_none() {
+                match self.files.get(id.vpath()) {
+                    Some(bytes) => Some(
+                        std::str::from_utf8(bytes)
+                            .map(str::to_owned)
+                            .map_err(|_| typst::diag::FileError::InvalidUtf8)?,
+                    ),
+                    None => None,
+                }
+            } else {
+                None
+            };
+
+            let text = match virtual_text {
+                Some(text) => text,
+                None => {
+                    // Load from disk
+                    let path = self.resolve_path(id)?;
+                    fs::read_to_string(&path)
+                        .map_err(|e| typst::diag::FileError::from_io(e, &path))?
+                }
+            };
             let source = Source::new(id, text);
 
             let mut sources = self.sources.lock().unwrap();
@@ -649,6 +812,12 @@ mod world {
         }
 
         fn file(&self, id: FileId) -> FileResult<Bytes> {
+            // Virtual files take precedence over disk.
+            if id.package().is_none() {
+                if let Some(bytes) = self.files.get(id.vpath()) {
+                    return Ok(bytes.clone());
+                }
+            }
             let path = self.resolve_path(id)?;
             let data = fs::read(&path)
                 .map_err(|e| typst::diag::FileError::from_io(e, &path))?;
@@ -693,7 +862,30 @@ mod world {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
     use std::ptr;
+
+    /// A minimal valid 1x1 transparent PNG.
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+        0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+        0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+        0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    unsafe fn add_file(compiler: *mut TypstCompiler, path: &str, data: &[u8]) -> i32 {
+        let path = CString::new(path).unwrap();
+        typst_compiler_add_file(compiler, path.as_ptr(), data.as_ptr(), data.len() as i32)
+    }
+
+    unsafe fn compile(compiler: *mut TypstCompiler, source: &str) -> *mut TypstCompileResult {
+        let mut result: *mut TypstCompileResult = ptr::null_mut();
+        let rc = typst_compile(compiler, source.as_ptr(), source.len() as i32, &mut result);
+        assert_eq!(rc, TYPST_OK);
+        assert!(!result.is_null());
+        result
+    }
 
     #[test]
     fn compiler_lifecycle() {
@@ -743,6 +935,200 @@ mod tests {
             assert_eq!(typst_result_is_success(ptr::null()), 0);
             assert_eq!(typst_result_page_count(ptr::null()), 0);
             assert_eq!(typst_result_diagnostic_count(ptr::null()), 0);
+        }
+    }
+
+    #[test]
+    fn add_file_then_compile_image() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(add_file(compiler, "logo.png", TINY_PNG), TYPST_OK);
+
+            let result = compile(compiler, "#image(\"logo.png\")");
+            assert_eq!(typst_result_is_success(result), 1);
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn compile_image_without_file_fails() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile(compiler, "#image(\"missing.png\")");
+            assert_eq!(typst_result_is_success(result), 0);
+            assert!(typst_result_diagnostic_count(result) >= 1);
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn add_file_leading_slash_equivalent() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(add_file(compiler, "/logo.png", TINY_PNG), TYPST_OK);
+
+            let result = compile(compiler, "#image(\"logo.png\")");
+            assert_eq!(typst_result_is_success(result), 1);
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn add_file_overwrite() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(add_file(compiler, "logo.png", b"not a png"), TYPST_OK);
+            assert_eq!(add_file(compiler, "logo.png", TINY_PNG), TYPST_OK);
+
+            let result = compile(compiler, "#image(\"logo.png\")");
+            assert_eq!(typst_result_is_success(result), 1);
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn virtual_typ_import() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(
+                add_file(compiler, "helper.typ", b"#let greeting = \"hi\""),
+                TYPST_OK
+            );
+
+            let result = compile(compiler, "#import \"helper.typ\": greeting\n#greeting");
+            assert_eq!(typst_result_is_success(result), 1);
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn add_file_invalid_args() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let path = CString::new("x.png").unwrap();
+
+            assert_eq!(
+                typst_compiler_add_file(
+                    ptr::null_mut(),
+                    path.as_ptr(),
+                    TINY_PNG.as_ptr(),
+                    TINY_PNG.len() as i32
+                ),
+                TYPST_ERR_NULL_POINTER
+            );
+            assert_eq!(
+                typst_compiler_add_file(
+                    compiler,
+                    ptr::null(),
+                    TINY_PNG.as_ptr(),
+                    TINY_PNG.len() as i32
+                ),
+                TYPST_ERR_NULL_POINTER
+            );
+            // Null data with positive length.
+            assert_eq!(
+                typst_compiler_add_file(compiler, path.as_ptr(), ptr::null(), 1),
+                TYPST_ERR_INVALID_ARGUMENT
+            );
+            // Negative length.
+            assert_eq!(
+                typst_compiler_add_file(compiler, path.as_ptr(), TINY_PNG.as_ptr(), -1),
+                TYPST_ERR_INVALID_ARGUMENT
+            );
+            // Paths that normalize to the bare root.
+            assert_eq!(add_file(compiler, "", TINY_PNG), TYPST_ERR_INVALID_ARGUMENT);
+            assert_eq!(add_file(compiler, "/", TINY_PNG), TYPST_ERR_INVALID_ARGUMENT);
+            // Null data with zero length registers an empty file.
+            assert_eq!(
+                typst_compiler_add_file(compiler, path.as_ptr(), ptr::null(), 0),
+                TYPST_OK
+            );
+
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn clear_files_removes_virtual_files() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(add_file(compiler, "logo.png", TINY_PNG), TYPST_OK);
+            assert_eq!(typst_compiler_clear_files(compiler), TYPST_OK);
+
+            let result = compile(compiler, "#image(\"logo.png\")");
+            assert_eq!(typst_result_is_success(result), 0);
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn render_png_produces_png_bytes() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile(compiler, "Hello, PNG!");
+            assert_eq!(typst_result_is_success(result), 1);
+
+            let mut buffer: *mut TypstBuffer = ptr::null_mut();
+            assert_eq!(typst_result_render_png(result, 0, 1.0, &mut buffer), TYPST_OK);
+            assert!(!buffer.is_null());
+
+            let mut data: *const u8 = ptr::null();
+            let mut len: i32 = 0;
+            assert_eq!(typst_buffer_get_data(buffer, &mut data, &mut len), TYPST_OK);
+            assert!(len > 8);
+            let magic = slice::from_raw_parts(data, 4);
+            assert_eq!(magic, &[0x89, 0x50, 0x4E, 0x47]);
+
+            typst_buffer_free(buffer);
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn render_png_error_codes() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let ok_result = compile(compiler, "Hello");
+            let failed_result = compile(compiler, "#image(\"missing.png\")");
+            let mut buffer: *mut TypstBuffer = ptr::null_mut();
+
+            assert_eq!(
+                typst_result_render_png(ok_result, 5, 1.0, &mut buffer),
+                TYPST_ERR_PAGE_OUT_OF_RANGE
+            );
+            assert_eq!(
+                typst_result_render_png(ok_result, 0, 0.0, &mut buffer),
+                TYPST_ERR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                typst_result_render_png(ok_result, 0, f32::NAN, &mut buffer),
+                TYPST_ERR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                typst_result_render_png(failed_result, 0, 1.0, &mut buffer),
+                TYPST_ERR_COMPILE_FAILED
+            );
+            assert_eq!(
+                typst_result_render_png(ptr::null(), 0, 1.0, &mut buffer),
+                TYPST_ERR_NULL_POINTER
+            );
+
+            typst_result_free(ok_result);
+            typst_result_free(failed_result);
+            typst_compiler_free(compiler);
         }
     }
 }

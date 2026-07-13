@@ -24,6 +24,7 @@ internal static partial class NativeMethods
     internal const int TYPST_ERR_INVALID_UTF8 = -2;
     internal const int TYPST_ERR_COMPILE_FAILED = -3;
     internal const int TYPST_ERR_PAGE_OUT_OF_RANGE = -4;
+    internal const int TYPST_ERR_INVALID_ARGUMENT = -5;
     internal const int TYPST_ERR_INTERNAL = -99;
 
     // -----------------------------------------------------------------------
@@ -57,6 +58,25 @@ internal static partial class NativeMethods
     internal static extern int typst_compiler_add_font_path(
         IntPtr compiler,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+    /// <summary>
+    /// Register an in-memory file addressable from Typst source by virtual
+    /// path. <paramref name="data"/> may be null only when
+    /// <paramref name="dataLen"/> is 0.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern unsafe int typst_compiler_add_file(
+        IntPtr compiler,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        byte* data,
+        int dataLen);
+
+    /// <summary>
+    /// Remove all in-memory files registered via
+    /// <see cref="typst_compiler_add_file"/>.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int typst_compiler_clear_files(IntPtr compiler);
 
     // -----------------------------------------------------------------------
     // Compilation
@@ -116,6 +136,28 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern unsafe int typst_result_get_sla(
         IntPtr result,
+        out byte* data,
+        out int len);
+
+    /// <summary>
+    /// Render a page (0-indexed) to PNG. On success <paramref name="buffer"/>
+    /// receives a buffer handle that must be freed with
+    /// <see cref="typst_buffer_free"/>.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int typst_result_render_png(
+        IntPtr result,
+        int page,
+        float pixelsPerPt,
+        out IntPtr buffer);
+
+    /// <summary>
+    /// Get a pointer into a buffer's data (valid until
+    /// <see cref="typst_buffer_free"/>).
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern unsafe int typst_buffer_get_data(
+        IntPtr buffer,
         out byte* data,
         out int len);
 

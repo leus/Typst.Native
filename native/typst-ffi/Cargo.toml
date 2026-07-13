@@ -1,6 +1,6 @@
 [package]
 name = "typst-ffi"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -16,11 +16,13 @@ crate-type = ["cdylib"]
 typst = "0.14"
 typst-pdf = "0.14"
 typst-svg = "0.14"
-typst-render = "0.15"
+typst-render = "0.14"
 typst-scribus = { path = "../typst-scribus" }
 typst-kit = { version = "0.14", features = ["fonts", "embed-fonts"] }
 
 # Supporting crates
+# tiny-skia must match the version used by typst-render (Pixmap flows across).
+tiny-skia = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 comemo = "0.5"
 ecow = "0.2"
