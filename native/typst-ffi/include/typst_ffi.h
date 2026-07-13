@@ -65,6 +65,38 @@ int32_t typst_compiler_add_font_path(struct typst_TypstCompiler *compiler,
                                      const char *path);
 
 /**
+ * Register an in-memory file that Typst source can reference by path,
+ * e.g. `#image("logo.png")` or `#import "helper.typ"`.
+ *
+ * `path` is a virtual path rooted at the compilation root (`"logo.png"` and
+ * `"/logo.png"` are equivalent). Backslashes are treated as path separators
+ * on every platform. Re-adding the same path overwrites the previous data.
+ * Virtual files take precedence over files on disk and persist until the
+ * compiler is freed or `typst_compiler_clear_files` is called.
+ *
+ * `data` may be null only if `data_len` is `0` (registers an empty file).
+ *
+ * # Safety
+ * `compiler` must be a valid handle. `path` must be a valid null-terminated
+ * UTF-8 string. `data` must point to `data_len` valid bytes (or be null when
+ * `data_len` is `0`).
+ */
+TYPST_API
+int32_t typst_compiler_add_file(struct typst_TypstCompiler *compiler,
+                                const char *path,
+                                const uint8_t *data,
+                                int32_t data_len);
+
+/**
+ * Remove all in-memory files previously registered with
+ * `typst_compiler_add_file`.
+ *
+ * # Safety
+ * `compiler` must be a valid handle.
+ */
+TYPST_API int32_t typst_compiler_clear_files(struct typst_TypstCompiler *compiler);
+
+/**
  * Compile a Typst source string.
  *
  * `source` is a pointer to a UTF-8 encoded string of `source_len` bytes
@@ -153,6 +185,43 @@ TYPST_API
 int32_t typst_result_get_sla(const struct typst_TypstCompileResult *result,
                              const uint8_t **data,
                              int32_t *len);
+
+/**
+ * Render one page (0-indexed) to PNG at the given scale.
+ *
+ * `pixels_per_pt` controls the resolution: `2.0` ≈ 144 DPI (the Typst CLI
+ * default). On success, `*out_buffer` receives a buffer handle that must be
+ * freed with `typst_buffer_free`; read its contents via
+ * `typst_buffer_get_data`.
+ *
+ * Returns `TYPST_OK` on success, `TYPST_ERR_COMPILE_FAILED` if the result is
+ * a failure, `TYPST_ERR_PAGE_OUT_OF_RANGE` for a bad page index,
+ * `TYPST_ERR_INVALID_ARGUMENT` for a non-finite or non-positive scale, and
+ * `TYPST_ERR_INTERNAL` if PNG encoding fails.
+ *
+ * # Safety
+ * All pointers must be valid.
+ */
+TYPST_API
+int32_t typst_result_render_png(const struct typst_TypstCompileResult *result,
+                                int32_t page,
+                                float pixels_per_pt,
+                                struct typst_TypstBuffer **out_buffer);
+
+/**
+ * Get a pointer to a buffer's data.
+ *
+ * `*data` and `*len` are set to the buffer contents. The pointer is owned by
+ * the buffer and remains valid until `typst_buffer_free` is called.
+ *
+ * # Safety
+ * All pointers must be valid. The returned `*data` pointer must not be used
+ * after `typst_buffer_free`.
+ */
+TYPST_API
+int32_t typst_buffer_get_data(const struct typst_TypstBuffer *buffer,
+                              const uint8_t **data,
+                              int32_t *len);
 
 /**
  * Get the number of diagnostics in a failed compilation result.

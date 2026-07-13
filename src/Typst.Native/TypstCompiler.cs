@@ -105,6 +105,78 @@ public sealed class TypstCompiler : IDisposable
     }
 
     /// <summary>
+    /// Registers an in-memory file that Typst source can reference by path,
+    /// for example <c>#image("logo.png")</c> or <c>#import "helper.typ"</c>.
+    /// </summary>
+    /// <param name="path">
+    /// Virtual path of the file, rooted at the compilation root:
+    /// <c>"logo.png"</c> and <c>"/logo.png"</c> are equivalent. Forward and
+    /// backward slashes are both accepted as separators. Avoid
+    /// <c>"main.typ"</c>, which is reserved for the in-memory main source.
+    /// </param>
+    /// <param name="data">
+    /// The file contents, e.g. raw image bytes. Typst decodes PNG, JPEG, GIF,
+    /// WebP, SVG, and PDF as <c>#image</c> sources; unsupported or corrupt
+    /// data surfaces as a compile diagnostic. Font files cannot be registered
+    /// this way — use <see cref="AddFontPath"/> instead.
+    /// </param>
+    /// <remarks>
+    /// Virtual files take precedence over files on disk under the root set
+    /// via <see cref="SetRoot"/>. Adding a file with an existing path
+    /// overwrites the previous contents. Files persist across
+    /// <see cref="Compile"/> calls until <see cref="ClearFiles"/> is called
+    /// or the compiler is disposed; each file is held once in native memory.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown if <paramref name="path"/> or <paramref name="data"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if <paramref name="path"/> is empty or whitespace.
+    /// </exception>
+    /// <exception cref="TypstException">
+    /// Thrown if the native call fails.
+    /// </exception>
+    public void AddFile(string path, byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        AddFile(path, data.AsSpan());
+    }
+
+    /// <inheritdoc cref="AddFile(string, byte[])"/>
+    public unsafe void AddFile(string path, ReadOnlySpan<byte> data)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException(
+                "Virtual file path must not be empty or whitespace.", nameof(path));
+        ThrowIfDisposed();
+
+        int rc;
+        fixed (byte* dataPtr = data)
+        {
+            // dataPtr is null for empty spans; length 0 is valid natively.
+            rc = NativeMethods.typst_compiler_add_file(
+                _handle!.DangerousGetHandle(), path, dataPtr, data.Length);
+        }
+
+        ThrowOnError(rc, $"Failed to add virtual file '{path}'");
+    }
+
+    /// <summary>
+    /// Removes all in-memory files previously registered with
+    /// <see cref="AddFile(string, byte[])"/>.
+    /// </summary>
+    public void ClearFiles()
+    {
+        ThrowIfDisposed();
+
+        int rc = NativeMethods.typst_compiler_clear_files(
+            _handle!.DangerousGetHandle());
+
+        ThrowOnError(rc, "Failed to clear virtual files");
+    }
+
+    /// <summary>
     /// Compiles a Typst source string and returns the result.
     /// </summary>
     /// <param name="source">The Typst markup source code.</param>

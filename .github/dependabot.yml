@@ -15,6 +15,21 @@ updates:
       - dependencies
       - rust
     open-pull-requests-limit: 10
+    ignore:
+      # All typst crates must stay on the same minor version as `typst`
+      # itself — bump them together, manually.
+      - dependency-name: "typst-render"
+        update-types:
+          - version-update:semver-minor
+      - dependency-name: "typst-pdf"
+        update-types:
+          - version-update:semver-minor
+      - dependency-name: "typst-svg"
+        update-types:
+          - version-update:semver-minor
+      - dependency-name: "typst-kit"
+        update-types:
+          - version-update:semver-minor
 
   # .NET (NuGet) dependencies
   - package-ecosystem: nuget
