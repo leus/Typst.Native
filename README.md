@@ -122,6 +122,17 @@ Typst.Native/
 | `Typst.Native`         | Managed wrapper — the package you reference       |
 | `Typst.Native.Runtime` | Pre-built native libraries for all platforms      |
 
+### Versioning
+
+The **major and minor** versions of the NuGet packages always match the major
+and minor versions of the bundled [Typst](https://github.com/typst/typst)
+compiler: `Typst.Native 0.15.x` compiles with Typst `0.15`. The **patch**
+version is independent and is incremented for fixes and improvements that
+don't change the underlying Typst version.
+
+When upgrading the Typst crates in `native/typst-ffi/Cargo.toml`, bump
+`VersionPrefix` in `Directory.Build.props` accordingly.
+
 ## Contributing
 
 Contributions are welcome! Please open an issue first to discuss what you'd like to change.

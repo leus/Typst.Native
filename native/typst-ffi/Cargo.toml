@@ -1,6 +1,9 @@
 [package]
 name = "typst-ffi"
-version = "0.3.0"
+# Versioning convention: major and minor match the bundled Typst version
+# (see the typst dependency below), same as the C# packages. Keep the
+# version string in `typst_version()` (src/lib.rs) in sync.
+version = "0.15.0"
 edition = "2021"
 license = "MIT"
 publish = false
