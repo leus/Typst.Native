@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # Core Typst crates — pin to a specific minor version for stability.
 # Update these when upgrading the Typst version.
-typst = "0.14"
+typst = "0.15"
 typst-pdf = "0.14"
 typst-svg = "0.15"
 typst-render = "0.14"
