@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use std::slice;
 
 use typst::foundations::Bytes;
-use typst::layout::PagedDocument;
+use typst_layout::PagedDocument;
 use typst::syntax::VirtualPath;
-use typst::World;
+use typst::{World, WorldExt};
 
 // ---------------------------------------------------------------------------
 // Opaque handle types
@@ -196,9 +196,12 @@ pub unsafe extern "C" fn typst_compiler_add_file(
     // Backslashes are separators only on Windows — normalize so virtual
     // paths behave identically everywhere.
     let normalized = path_str.replace('\\', "/");
-    let vpath = VirtualPath::new(normalized.as_str());
+    let vpath = match VirtualPath::new(normalized.as_str()) {
+        Ok(vpath) => vpath,
+        Err(_) => return TYPST_ERR_INVALID_ARGUMENT,
+    };
     // Reject paths that normalize to the bare root ("", ".", "/").
-    if vpath.as_rootless_path().as_os_str().is_empty() {
+    if vpath.is_root() {
         return TYPST_ERR_INVALID_ARGUMENT;
     }
     let bytes = if data_len == 0 {
@@ -326,15 +329,15 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
 
             // Export SVG per page
             let svg_pages: Vec<String> = document
-                .pages
+                .pages()
                 .iter()
-                .map(|page| typst_svg::svg(page))
+                .map(|page| typst_svg::svg(page, &typst_svg::SvgOptions::default()))
                 .collect();
 
             // Export to Scribus SLA
             let sla = typst_scribus::sla(&document, &SlaOptions::default());
 
-            let page_count = document.pages.len() as i32;
+            let page_count = document.pages().len() as i32;
 
             TypstCompileResult {
                 kind: CompileResultKind::Success {
@@ -352,7 +355,7 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
                 .map(|d| {
                     let (line, column) = if let Some(id) = d.span.id() {
                         if let Ok(src) = world.source(id) {
-                            let range = src.range(d.span).unwrap_or(0..0);
+                            let range = world.range(d.span).unwrap_or(0..0);
                             let line_idx = src.lines().byte_to_line(range.start).unwrap_or(0);
                             let col_idx = src.lines().byte_to_column(range.start).unwrap_or(0);
                             (line_idx as i64, col_idx as i64)
@@ -538,10 +541,15 @@ pub unsafe extern "C" fn typst_result_render_png(
     }
     match &(*result).kind {
         CompileResultKind::Success { document, .. } => {
-            if page < 0 || page as usize >= document.pages.len() {
+            if page < 0 || page as usize >= document.pages().len() {
                 return TYPST_ERR_PAGE_OUT_OF_RANGE;
             }
-            let pixmap = typst_render::render(&document.pages[page as usize], pixels_per_pt);
+            let options = typst_render::RenderOptions {
+                pixel_per_pt: (pixels_per_pt as f64).into(),
+                render_bleed: false,
+            };
+            let pixmap =
+                typst_render::render(&document.pages()[page as usize], &options);
             match pixmap.encode_png() {
                 Ok(data) => {
                     *out_buffer = Box::into_raw(Box::new(TypstBuffer { data }));
@@ -679,7 +687,7 @@ pub unsafe extern "C" fn typst_buffer_free(buffer: *mut TypstBuffer) {
 #[no_mangle]
 pub extern "C" fn typst_version() -> *const c_char {
     // SAFETY: The byte string is null-terminated and lives for 'static.
-    b"0.3.0\0".as_ptr() as *const c_char
+    b"0.15.0\0".as_ptr() as *const c_char
 }
 
 // ===========================================================================
@@ -696,17 +704,16 @@ mod world {
 
     use chrono::{Datelike, Timelike};
     use typst::diag::FileResult;
-    use typst::foundations::{Bytes, Datetime};
-    use typst::syntax::{FileId, Source, VirtualPath};
+    use typst::foundations::{Bytes, Datetime, Duration};
+    use typst::syntax::{FileId, Source, VirtualPath, VirtualRoot};
     use typst::text::{Font, FontBook};
     use typst::utils::LazyHash;
     use typst::{Library, LibraryExt, World};
-    use typst_kit::fonts::{FontSearcher, FontSlot, Fonts};
+    use typst_kit::fonts::FontStore;
 
     pub struct SimpleWorld {
         library: LazyHash<Library>,
-        book: LazyHash<FontBook>,
-        fonts: Vec<FontSlot>,
+        fonts: FontStore,
         main_source: Source,
         root: Option<PathBuf>,
         sources: Mutex<HashMap<FileId, Source>>,
@@ -721,17 +728,20 @@ mod world {
             font_paths: &[PathBuf],
             files: HashMap<VirtualPath, Bytes>,
         ) -> Self {
-            let font_result: Fonts = FontSearcher::new()
-                .include_system_fonts(true)
-                .include_embedded_fonts(true)
-                .search_with(font_paths);
+            // Font paths have the highest priority, then system fonts, then
+            // embedded fonts — matching the old typst-kit `FontSearcher` order.
+            let mut fonts = FontStore::new();
+            for path in font_paths {
+                fonts.extend(typst_kit::fonts::scan(path));
+            }
+            fonts.extend(typst_kit::fonts::system());
+            fonts.extend(typst_kit::fonts::embedded());
 
             let main_source = Source::detached(text);
 
             SimpleWorld {
                 library: LazyHash::new(Library::default()),
-                book: LazyHash::new(font_result.book),
-                fonts: font_result.fonts,
+                fonts,
                 main_source,
                 root,
                 sources: Mutex::new(HashMap::new()),
@@ -741,17 +751,17 @@ mod world {
 
         /// Resolve a FileId to a real filesystem path using the root.
         fn resolve_path(&self, id: FileId) -> FileResult<PathBuf> {
-            if id.package().is_some() {
+            if matches!(id.root(), VirtualRoot::Package(_)) {
                 return Err(typst::diag::FileError::Package(
                     typst::diag::PackageError::Other(Some(
-                        ecow::eco_format!("package imports are not supported"),
+                        typst::ecow::eco_format!("package imports are not supported"),
                     )),
                 ));
             }
             let root = self.root.as_deref().unwrap_or_else(|| Path::new("."));
             id.vpath()
-                .resolve(root)
-                .ok_or(typst::diag::FileError::AccessDenied)
+                .realize(root)
+                .map_err(|_| typst::diag::FileError::AccessDenied)
         }
     }
 
@@ -761,7 +771,7 @@ mod world {
         }
 
         fn book(&self) -> &LazyHash<FontBook> {
-            &self.book
+            self.fonts.book()
         }
 
         fn main(&self) -> FileId {
@@ -782,7 +792,7 @@ mod world {
             }
 
             // Virtual files take precedence over disk.
-            let virtual_text = if id.package().is_none() {
+            let virtual_text = if matches!(id.root(), VirtualRoot::Project) {
                 match self.files.get(id.vpath()) {
                     Some(bytes) => Some(
                         std::str::from_utf8(bytes)
@@ -813,7 +823,7 @@ mod world {
 
         fn file(&self, id: FileId) -> FileResult<Bytes> {
             // Virtual files take precedence over disk.
-            if id.package().is_none() {
+            if matches!(id.root(), VirtualRoot::Project) {
                 if let Some(bytes) = self.files.get(id.vpath()) {
                     return Ok(bytes.clone());
                 }
@@ -825,13 +835,14 @@ mod world {
         }
 
         fn font(&self, index: usize) -> Option<Font> {
-            self.fonts.get(index).and_then(|slot| slot.get())
+            self.fonts.font(index)
         }
 
-        fn today(&self, offset: Option<i64>) -> Option<Datetime> {
+        fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
             let now = chrono::Local::now();
-            if let Some(_offset) = offset {
-                let utc = now.naive_utc();
+            if let Some(offset) = offset {
+                let utc = now.naive_utc()
+                    + chrono::Duration::seconds(offset.seconds() as i64);
                 Datetime::from_ymd_hms(
                     utc.year(),
                     utc.month() as u8,

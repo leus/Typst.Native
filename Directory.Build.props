@@ -17,7 +17,9 @@
       Compile Typst documents to PDF, SVG, and PNG directly from .NET without external dependencies.
     </Description>
 
-    <!-- Versioning -->
-    <VersionPrefix>0.3.0</VersionPrefix>
+    <!-- Versioning convention: major and minor MUST match the Typst version
+         bundled via native/typst-ffi (see its Cargo.toml). The patch version
+         is ours to increment for fixes that don't change the Typst version. -->
+    <VersionPrefix>0.15.0</VersionPrefix>
   </PropertyGroup>
 </Project>

@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 
+use typst_layout::Page;
 use typst_library::layout::{
-    Abs, Frame, FrameItem, Page, Point, Size, Transform,
+    Abs, Frame, FrameItem, Point, Size, Transform,
 };
 use typst_library::text::TextItem;
 use typst_library::visualize::{
@@ -12,6 +13,14 @@ use typst_library::visualize::{
 use xmlwriter::XmlWriter;
 
 use crate::color::SlaColor;
+
+/// Try to find and decode the name-table entry with the given id.
+/// `Font::find_name` is no longer public in typst 0.15.
+fn find_font_name(ttf: &ttf_parser::Face, name_id: u16) -> Option<String> {
+    ttf.names()
+        .into_iter()
+        .find_map(|entry| if entry.name_id == name_id { entry.to_string() } else { None })
+}
 
 /// Tracks state while rendering to SLA.
 pub struct SlaRenderer {
@@ -263,10 +272,11 @@ impl SlaRenderer {
 
         // Scribus names fonts as "Family Subfamily" using name table IDs 1 + 2
         // (e.g. "EB Garamond Medium Italic", "Arial Regular", "Adobe Caslon Pro Regular")
-        let font_family = match (text.font.find_name(1), text.font.find_name(2)) {
+        let ttf = text.font.ttf();
+        let font_family = match (find_font_name(ttf, 1), find_font_name(ttf, 2)) {
             (Some(fam), Some(sub)) => format!("{fam} {sub}"),
             (Some(fam), None) => fam,
-            _ => text.font.info().family.to_string(),
+            _ => text.font.font().info().family.to_string(),
         };
 
         let (cx, cy) = self.to_canvas(x, frame_y, page_ypos);
