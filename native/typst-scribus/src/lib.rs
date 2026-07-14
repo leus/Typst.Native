@@ -6,7 +6,7 @@ mod color;
 mod image;
 mod render;
 
-use typst_library::layout::{PagedDocument, Page};
+use typst_layout::{Page, PagedDocument};
 use xmlwriter::XmlWriter;
 
 use crate::render::SlaRenderer;
@@ -46,7 +46,7 @@ pub fn sla(document: &PagedDocument, options: &SlaOptions) -> String {
 
     // Pre-collect all colors used in the document.
     let mut renderer = SlaRenderer::new();
-    for page in document.pages.iter() {
+    for page in document.pages().iter() {
         renderer.collect_colors_page(page);
     }
 
@@ -63,12 +63,12 @@ pub fn sla(document: &PagedDocument, options: &SlaOptions) -> String {
     write_master_page(&mut xml, document);
 
     // --- PAGE elements ---
-    for (page_idx, page) in document.pages.iter().enumerate() {
+    for (page_idx, page) in document.pages().iter().enumerate() {
         write_page_element(&mut xml, page_idx, page, document);
     }
 
     // --- PAGEOBJECT elements ---
-    for (page_idx, page) in document.pages.iter().enumerate() {
+    for (page_idx, page) in document.pages().iter().enumerate() {
         let ypos = page_ypos(document, page_idx);
         renderer.render_page(&mut xml, page_idx, page, ypos);
     }
@@ -84,7 +84,7 @@ pub fn sla(document: &PagedDocument, options: &SlaOptions) -> String {
 pub fn page_ypos(document: &PagedDocument, page_idx: usize) -> f64 {
     let mut y = SCRATCH_TOP;
     for i in 0..page_idx {
-        let h = document.pages[i].frame.height().to_pt();
+        let h = document.pages()[i].frame.height().to_pt();
         y += h + GAP_VERTICAL;
     }
     y
@@ -97,14 +97,14 @@ fn write_document_attrs(
     options: &SlaOptions,
 ) {
     let (w, h) = document
-        .pages
+        .pages()
         .first()
         .map(|p| (p.frame.width().to_pt(), p.frame.height().to_pt()))
         .unwrap_or((595.2744, 841.8888));
 
     let orientation = if w > h { "1" } else { "0" };
 
-    xml.write_attribute("ANZPAGES", &document.pages.len().to_string());
+    xml.write_attribute("ANZPAGES", &document.pages().len().to_string());
     xml.write_attribute("PAGEWIDTH", &format!("{w:.4}"));
     xml.write_attribute("PAGEHEIGHT", &format!("{h:.4}"));
     xml.write_attribute("BORDERLEFT", "0");
@@ -728,7 +728,7 @@ fn write_structural_elements(xml: &mut XmlWriter) {
 /// Write the MASTERPAGE element.
 fn write_master_page(xml: &mut XmlWriter, document: &PagedDocument) {
     let (w, h) = document
-        .pages
+        .pages()
         .first()
         .map(|p| (p.frame.width().to_pt(), p.frame.height().to_pt()))
         .unwrap_or((595.2744, 841.8888));

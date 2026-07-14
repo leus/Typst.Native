@@ -11,7 +11,10 @@ name = "typst_scribus"
 path = "src/lib.rs"
 
 [dependencies]
-typst-library = "0.14"
-ecow = "0.2"
+typst-library = "0.15"
+typst-layout = "0.15"
+# Used to read font name-table entries; must match the version used by
+# typst-library so `ttf_parser::Face` types line up across the boundary.
+ttf-parser = "0.25"
 xmlwriter = "0.1"
 base64 = "0.22"

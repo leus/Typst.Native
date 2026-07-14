@@ -28,7 +28,7 @@ impl SlaColor {
     /// falling back to black.
     pub fn from_paint(paint: &Paint) -> Self {
         match paint {
-            Paint::Solid(color) => Self::from_color(*color),
+            Paint::Solid(color) => Self::from_color(color.clone()),
             // For gradients and tilings, fall back to black.
             _ => Self {
                 name: String::from("Black"),
