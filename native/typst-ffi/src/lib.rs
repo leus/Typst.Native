@@ -50,6 +50,8 @@ enum CompileResultKind {
         svg_pages: Vec<String>,
         /// SLA (Scribus) XML produced by `typst-scribus`.
         sla: String,
+        /// HTML produced by `typst-html`.
+        html: String,
         /// Total number of pages in the compiled document.
         page_count: i32,
         /// The compiled document, kept alive for on-demand PNG rendering.
@@ -292,6 +294,7 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
     use typst::diag::{Severity, Warned};
     use typst_pdf::PdfOptions;
     use typst_scribus::SlaOptions;
+    use typst_html::HtmlOptions;
 
     let world = world::SimpleWorld::new(
         source,
@@ -337,6 +340,49 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
             // Export to Scribus SLA
             let sla = typst_scribus::sla(&document, &SlaOptions::default());
 
+            // Export to HTML
+            let html = match typst::compile::<typst_html::HtmlDocument>(&world) {
+                Warned { output: Ok(html_document), .. } => {
+                    match typst_html::html(&html_document, &HtmlOptions::default()) {
+                        Ok(strs) => strs,
+                        Err(errors) => {
+                            let diagnostics = errors
+                                .iter()
+                                .map(|d| TypstDiagnosticEntry {
+                                    severity: match d.severity {
+                                        Severity::Error => 0,
+                                        Severity::Warning => 1,
+                                    },
+                                    message: d.message.to_string(),
+                                    line: 0,
+                                    column: 0,
+                                })
+                                .collect();
+                            return TypstCompileResult {
+                                kind: CompileResultKind::Failure { diagnostics },
+                            };
+                        }
+                    }
+                }
+                Warned { output: Err(errors), .. } => {
+                    let diagnostics = errors
+                        .iter()
+                        .map(|d| TypstDiagnosticEntry {
+                            severity: match d.severity {
+                                Severity::Error => 0,
+                                Severity::Warning => 1,
+                            },
+                            message: d.message.to_string(),
+                            line: 0,
+                            column: 0,
+                        })
+                        .collect();
+                    return TypstCompileResult {
+                        kind: CompileResultKind::Failure { diagnostics },
+                    };
+                }
+            };
+
             let page_count = document.pages().len() as i32;
 
             TypstCompileResult {
@@ -344,6 +390,7 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
                     pdf,
                     svg_pages,
                     sla,
+                    html,
                     page_count,
                     document,
                 },
@@ -506,6 +553,36 @@ pub unsafe extern "C" fn typst_result_get_sla(
         CompileResultKind::Success { sla, .. } => {
             *data = sla.as_ptr();
             *len = sla.len() as i32;
+            TYPST_OK
+        }
+        CompileResultKind::Failure { .. } => TYPST_ERR_COMPILE_FAILED,
+    }
+}
+
+/// Get the HTML output.
+///
+/// On success, `*data` and `*len` are set to the UTF-8 HTML string. The buffer
+/// is owned by the result and remains valid until `typst_result_free` is called.
+///
+/// Returns `TYPST_OK` on success, `TYPST_ERR_COMPILE_FAILED` if the result
+/// is a failure.
+///
+/// # Safety
+/// All pointers must be valid. The returned `*data` pointer must not be used
+/// after `typst_result_free`.
+#[no_mangle]
+pub unsafe extern "C" fn typst_result_get_html(
+    result: *const TypstCompileResult,
+    data: *mut *const u8,
+    len: *mut i32,
+) -> i32 {
+    if result.is_null() || data.is_null() || len.is_null() {
+        return TYPST_ERR_NULL_POINTER;
+    }
+    match &(*result).kind {
+        CompileResultKind::Success { html, .. } => {
+            *data = html.as_ptr();
+            *len = html.len() as i32;
             TYPST_OK
         }
         CompileResultKind::Failure { .. } => TYPST_ERR_COMPILE_FAILED,
@@ -708,7 +785,7 @@ mod world {
     use typst::syntax::{FileId, Source, VirtualPath, VirtualRoot};
     use typst::text::{Font, FontBook};
     use typst::utils::LazyHash;
-    use typst::{Library, LibraryExt, World};
+    use typst::{Feature, Library, LibraryExt, World};
     use typst_kit::fonts::FontStore;
 
     pub struct SimpleWorld {
@@ -739,8 +816,12 @@ mod world {
 
             let main_source = Source::detached(text);
 
+            let library = Library::builder()
+                .with_features(std::iter::once(Feature::Html).collect())
+                .build();
+
             SimpleWorld {
-                library: LazyHash::new(Library::default()),
+                library: LazyHash::new(library),
                 fonts,
                 main_source,
                 root,

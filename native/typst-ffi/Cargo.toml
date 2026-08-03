@@ -20,6 +20,7 @@ typst = "0.15"
 typst-layout = "0.15"
 typst-pdf = "0.15"
 typst-svg = "0.15"
+typst-html = "0.15"
 typst-render = "0.15"
 typst-scribus = { path = "../typst-scribus" }
 typst-kit = { version = "0.15", features = ["scan-fonts", "embedded-fonts"] }
