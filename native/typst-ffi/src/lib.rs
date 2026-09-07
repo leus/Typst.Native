@@ -17,11 +17,12 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
+use std::ptr;
 use std::slice;
 
 use typst::foundations::Bytes;
 use typst_layout::PagedDocument;
-use typst::syntax::VirtualPath;
+use typst::syntax::{FileId, RootedPath, VirtualPath, VirtualRoot};
 use typst::{World, WorldExt};
 
 // ---------------------------------------------------------------------------
@@ -239,6 +240,12 @@ pub unsafe extern "C" fn typst_compiler_clear_files(compiler: *mut TypstCompiler
 /// (not null-terminated). On success, `*result` receives an opaque handle
 /// that must be freed with `typst_result_free`.
 ///
+/// The entry source is *detached*: it occupies the virtual path `/main.typ`,
+/// directly at the compilation root. Relative paths inside it therefore
+/// resolve against the root, and a leading `..` always escapes it. Use
+/// `typst_compile_with_path` to place the entry elsewhere in the virtual
+/// file system.
+///
 /// Returns `TYPST_OK` (0) on success (even if compilation produced errors —
 /// check with `typst_result_is_success`). Returns a negative error code on
 /// API misuse (null pointers, invalid UTF-8).
@@ -253,8 +260,48 @@ pub unsafe extern "C" fn typst_compile(
     source_len: i32,
     result: *mut *mut TypstCompileResult,
 ) -> i32 {
+    typst_compile_with_path(compiler, source, source_len, ptr::null(), result)
+}
+
+/// Compile a Typst source string, giving the entry source a location in the
+/// virtual file system.
+///
+/// Identical to `typst_compile`, except that `main_vpath` names where the
+/// entry source sits relative to the compilation root. This is what makes
+/// relative paths in the entry resolve the way the `typst` CLI resolves them:
+/// an entry registered at `"sub/main.typ"` can reach `"../other/dep.typ"`,
+/// because that resolves to `/other/dep.typ`, still inside the root.
+///
+/// `main_vpath` is a null-terminated UTF-8 virtual path rooted at the
+/// compilation root, using the same rules as `typst_compiler_add_file`:
+/// `"sub/main.typ"` and `"/sub/main.typ"` are equivalent, and backslashes are
+/// treated as separators on every platform. Passing `NULL` reproduces
+/// `typst_compile` exactly, i.e. a detached entry at `/main.typ`.
+///
+/// The entry source always shadows both an on-disk file and a virtual file
+/// registered at the same path, so `main_vpath` need not exist on disk.
+///
+/// Returns `TYPST_ERR_INVALID_ARGUMENT` if `main_vpath` is not a usable
+/// virtual path, for example if it escapes the root or normalizes to the bare
+/// root itself.
+///
+/// # Safety
+/// All pointer arguments must be valid. `source` must point to `source_len`
+/// valid bytes. `main_vpath` must be a valid null-terminated UTF-8 string, or
+/// `NULL`.
+#[no_mangle]
+pub unsafe extern "C" fn typst_compile_with_path(
+    compiler: *mut TypstCompiler,
+    source: *const u8,
+    source_len: i32,
+    main_vpath: *const c_char,
+    result: *mut *mut TypstCompileResult,
+) -> i32 {
     if compiler.is_null() || source.is_null() || result.is_null() {
         return TYPST_ERR_NULL_POINTER;
+    }
+    if source_len < 0 {
+        return TYPST_ERR_INVALID_ARGUMENT;
     }
 
     let _compiler = &*compiler;
@@ -262,6 +309,21 @@ pub unsafe extern "C" fn typst_compile(
     let source_str = match std::str::from_utf8(source_bytes) {
         Ok(s) => s,
         Err(_) => return TYPST_ERR_INVALID_UTF8,
+    };
+
+    // Resolve the entry's virtual path up front so a bad path is reported as
+    // API misuse rather than as a compile diagnostic.
+    let main_id = if main_vpath.is_null() {
+        None
+    } else {
+        let vpath_str = match CStr::from_ptr(main_vpath).to_str() {
+            Ok(s) => s,
+            Err(_) => return TYPST_ERR_INVALID_UTF8,
+        };
+        match parse_virtual_path(vpath_str) {
+            Some(vpath) => Some(RootedPath::new(VirtualRoot::Project, vpath).intern()),
+            None => return TYPST_ERR_INVALID_ARGUMENT,
+        }
     };
 
     // -----------------------------------------------------------------------
@@ -281,16 +343,36 @@ pub unsafe extern "C" fn typst_compile(
     // minimal `typst::World` implementation suitable for in-memory compilation.
     // -----------------------------------------------------------------------
 
-    let compile_result = compile_inner(_compiler, source_str);
+    let compile_result = compile_inner(_compiler, source_str, main_id);
     let boxed = Box::new(compile_result);
     *result = Box::into_raw(boxed);
 
     TYPST_OK
 }
 
+/// Parse a caller-supplied virtual path using the same rules as
+/// `typst_compiler_add_file`: backslashes are separators on every platform,
+/// and a path that normalizes to the bare root is rejected.
+///
+/// Returns `None` if the path is unusable, including when it escapes the root.
+fn parse_virtual_path(path: &str) -> Option<VirtualPath> {
+    // Backslashes are separators only on Windows — normalize so virtual
+    // paths behave identically everywhere.
+    let normalized = path.replace('\\', "/");
+    let vpath = VirtualPath::new(normalized.as_str()).ok()?;
+    if vpath.is_root() {
+        return None;
+    }
+    Some(vpath)
+}
+
 /// Internal compilation logic, separated for readability and to keep
 /// unsafe code minimal.
-fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
+fn compile_inner(
+    compiler: &TypstCompiler,
+    source: &str,
+    main_id: Option<FileId>,
+) -> TypstCompileResult {
     use typst::diag::{Severity, Warned};
     use typst_pdf::PdfOptions;
     use typst_scribus::SlaOptions;
@@ -298,6 +380,7 @@ fn compile_inner(compiler: &TypstCompiler, source: &str) -> TypstCompileResult {
 
     let world = world::SimpleWorld::new(
         source,
+        main_id,
         compiler.root.clone(),
         &compiler.font_paths,
         compiler.files.clone(),
@@ -763,8 +846,10 @@ pub unsafe extern "C" fn typst_buffer_free(buffer: *mut TypstBuffer) {
 /// C string.
 #[no_mangle]
 pub extern "C" fn typst_version() -> *const c_char {
+    // Derived from Cargo.toml so the reported version cannot drift from the
+    // crate version the way a hardcoded literal does.
     // SAFETY: The byte string is null-terminated and lives for 'static.
-    b"0.15.0\0".as_ptr() as *const c_char
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
 }
 
 // ===========================================================================
@@ -799,8 +884,17 @@ mod world {
     }
 
     impl SimpleWorld {
+        /// Build a world for one compilation.
+        ///
+        /// `main_id` gives the entry source a position in the virtual file
+        /// system. Typst resolves a relative path against the *importing*
+        /// file's virtual parent, so this is what decides whether `../` from
+        /// the entry stays inside the root. `None` falls back to
+        /// `Source::detached`, which pins the entry at `/main.typ`, i.e.
+        /// directly at the root, where any `..` necessarily escapes.
         pub fn new(
             text: &str,
+            main_id: Option<FileId>,
             root: Option<PathBuf>,
             font_paths: &[PathBuf],
             files: HashMap<VirtualPath, Bytes>,
@@ -814,7 +908,10 @@ mod world {
             fonts.extend(typst_kit::fonts::system());
             fonts.extend(typst_kit::fonts::embedded());
 
-            let main_source = Source::detached(text);
+            let main_source = match main_id {
+                Some(id) => Source::new(id, text.to_owned()),
+                None => Source::detached(text),
+            };
 
             let library = Library::builder()
                 .with_features(std::iter::once(Feature::Html).collect())
@@ -903,6 +1000,14 @@ mod world {
         }
 
         fn file(&self, id: FileId) -> FileResult<Bytes> {
+            // The entry source shadows disk and virtual files alike, so that
+            // `#read`-ing the entry's own path yields the text that was
+            // actually compiled rather than whatever is on disk. `source`
+            // short-circuits the same way.
+            if id == self.main_source.id() {
+                return Ok(Bytes::new(self.main_source.text().as_bytes().to_vec()));
+            }
+
             // Virtual files take precedence over disk.
             if matches!(id.root(), VirtualRoot::Project) {
                 if let Some(bytes) = self.files.get(id.vpath()) {
@@ -955,6 +1060,7 @@ mod world {
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::path::Path;
     use std::ptr;
 
     /// A minimal valid 1x1 transparent PNG.
@@ -1220,6 +1326,325 @@ mod tests {
 
             typst_result_free(ok_result);
             typst_result_free(failed_result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Entry virtual path (`typst_compile_with_path`)
+    // -----------------------------------------------------------------------
+
+    /// A throwaway directory tree that deletes itself on drop.
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new(tag: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("typst-ffi-{tag}-{unique}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempTree(dir)
+        }
+
+        /// Write `contents` to `relative`, creating parent directories.
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    unsafe fn set_root(compiler: *mut TypstCompiler, path: &Path) -> i32 {
+        let path = CString::new(path.to_str().unwrap()).unwrap();
+        typst_compiler_set_root(compiler, path.as_ptr())
+    }
+
+    /// Compile with an explicit entry virtual path. `None` means detached.
+    unsafe fn compile_at(
+        compiler: *mut TypstCompiler,
+        source: &str,
+        vpath: Option<&str>,
+    ) -> *mut TypstCompileResult {
+        let vpath = vpath.map(|v| CString::new(v).unwrap());
+        let vpath_ptr = vpath.as_ref().map_or(ptr::null(), |v| v.as_ptr());
+        let mut result: *mut TypstCompileResult = ptr::null_mut();
+        let rc = typst_compile_with_path(
+            compiler,
+            source.as_ptr(),
+            source.len() as i32,
+            vpath_ptr,
+            &mut result,
+        );
+        assert_eq!(rc, TYPST_OK);
+        assert!(!result.is_null());
+        result
+    }
+
+    /// Concatenate a result's diagnostics, for assertion messages.
+    unsafe fn diagnostics(result: *const TypstCompileResult) -> String {
+        let count = typst_result_diagnostic_count(result);
+        let mut out = String::new();
+        for i in 0..count {
+            let mut severity: i32 = 0;
+            let mut message: *const u8 = ptr::null();
+            let mut message_len: i32 = 0;
+            let mut line: i64 = 0;
+            let mut column: i64 = 0;
+            if typst_result_get_diagnostic(
+                result,
+                i,
+                &mut severity,
+                &mut message,
+                &mut message_len,
+                &mut line,
+                &mut column,
+            ) == TYPST_OK
+                && !message.is_null()
+            {
+                let bytes = slice::from_raw_parts(message, message_len as usize);
+                out.push_str(&String::from_utf8_lossy(bytes));
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// The bug from issue #19: an entry in a subdirectory reaching a sibling
+    /// directory through `..`. Fails when the entry is detached, because a
+    /// detached entry sits at the root and `..` escapes it.
+    #[test]
+    fn entry_vpath_allows_parent_relative_import() {
+        let tree = TempTree::new("parent-import");
+        tree.write("other/dep.typ", "#let greet = \"hi\"\n");
+        let source = "#import \"../other/dep.typ\": greet\n#greet\n";
+
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(set_root(compiler, &tree.0), TYPST_OK);
+
+            // Detached: the entry is pinned at /main.typ, so `..` escapes.
+            let detached = compile_at(compiler, source, None);
+            assert_eq!(
+                typst_result_is_success(detached),
+                0,
+                "detached entry unexpectedly resolved `..`"
+            );
+            typst_result_free(detached);
+
+            // Placed at /sub/main.typ, `..` resolves to /other/dep.typ.
+            let placed = compile_at(compiler, source, Some("sub/main.typ"));
+            assert_eq!(
+                typst_result_is_success(placed),
+                1,
+                "placed entry failed: {}",
+                diagnostics(placed)
+            );
+            typst_result_free(placed);
+
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// A sibling import must resolve next to the entry, not at the root.
+    /// This is the case that regresses if the entry keeps a detached identity
+    /// while the root is widened.
+    #[test]
+    fn entry_vpath_resolves_sibling_relative_to_entry() {
+        let tree = TempTree::new("sibling-import");
+        tree.write("sub/sib.typ", "#let sib = \"hi\"\n");
+        // A decoy at the root: if resolution is relative to the root rather
+        // than to the entry, this one gets picked up and the marker differs.
+        tree.write("sib.typ", "#let sib = \"WRONG\"\n");
+        let source = "#import \"sib.typ\": sib\n#sib\n";
+
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(set_root(compiler, &tree.0), TYPST_OK);
+
+            let placed = compile_at(compiler, source, Some("sub/main.typ"));
+            assert_eq!(
+                typst_result_is_success(placed),
+                1,
+                "sibling import failed: {}",
+                diagnostics(placed)
+            );
+            typst_result_free(placed);
+
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// `#read` and friends go through the same relative-path resolution as
+    /// `#import`, so the fix must cover them too.
+    #[test]
+    fn entry_vpath_applies_to_read() {
+        let tree = TempTree::new("read");
+        tree.write("other/data.txt", "payload");
+        let source = "#read(\"../other/data.txt\")\n";
+
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(set_root(compiler, &tree.0), TYPST_OK);
+
+            let placed = compile_at(compiler, source, Some("sub/main.typ"));
+            assert_eq!(
+                typst_result_is_success(placed),
+                1,
+                "parent-relative read failed: {}",
+                diagnostics(placed)
+            );
+            typst_result_free(placed);
+
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// A null vpath must behave exactly like `typst_compile`, keeping the
+    /// entry at `/main.typ`. Importing "main.typ" from a detached entry is
+    /// therefore a self-import, which Typst reports as a cycle.
+    #[test]
+    fn entry_vpath_null_stays_detached() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile_at(compiler, "#import \"main.typ\": x\n#x\n", None);
+            assert_eq!(typst_result_is_success(result), 0);
+            assert!(
+                diagnostics(result).contains("cyclic"),
+                "expected a cyclic import, got: {}",
+                diagnostics(result)
+            );
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// Backslashes are separators on every platform, matching
+    /// `typst_compiler_add_file`. A leading slash is also accepted.
+    #[test]
+    fn entry_vpath_normalizes_separators() {
+        let tree = TempTree::new("separators");
+        tree.write("other/dep.typ", "#let greet = \"hi\"\n");
+        let source = "#import \"../other/dep.typ\": greet\n#greet\n";
+
+        for vpath in ["sub\\main.typ", "/sub/main.typ", "./sub/main.typ"] {
+            unsafe {
+                let compiler = typst_compiler_new();
+                assert_eq!(set_root(compiler, &tree.0), TYPST_OK);
+                let result = compile_at(compiler, source, Some(vpath));
+                assert_eq!(
+                    typst_result_is_success(result),
+                    1,
+                    "vpath {vpath:?} failed: {}",
+                    diagnostics(result)
+                );
+                typst_result_free(result);
+                typst_compiler_free(compiler);
+            }
+        }
+    }
+
+    /// An unusable entry vpath is API misuse, not a compile diagnostic.
+    #[test]
+    fn entry_vpath_rejects_invalid_paths() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let source = b"Hello";
+
+            for vpath in ["", "/", ".", "..", "../escapes.typ"] {
+                let c_vpath = CString::new(vpath).unwrap();
+                let mut result: *mut TypstCompileResult = ptr::null_mut();
+                let rc = typst_compile_with_path(
+                    compiler,
+                    source.as_ptr(),
+                    source.len() as i32,
+                    c_vpath.as_ptr(),
+                    &mut result,
+                );
+                assert_eq!(
+                    rc, TYPST_ERR_INVALID_ARGUMENT,
+                    "vpath {vpath:?} should have been rejected"
+                );
+                assert!(result.is_null());
+            }
+
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// The entry text wins over a file of the same name on disk, so that what
+    /// gets compiled is what the caller passed.
+    #[test]
+    fn entry_vpath_shadows_disk() {
+        let tree = TempTree::new("shadow");
+        tree.write("sub/main.typ", "#let marker = \"FROM DISK\"\n");
+
+        unsafe {
+            let compiler = typst_compiler_new();
+            assert_eq!(set_root(compiler, &tree.0), TYPST_OK);
+
+            // Importing the entry's own path is a self-import either way; the
+            // point is that it resolves to the in-memory entry, not the file.
+            let result = compile_at(
+                compiler,
+                "#import \"main.typ\": marker\n#marker\n",
+                Some("sub/main.typ"),
+            );
+            assert_eq!(typst_result_is_success(result), 0);
+            assert!(
+                diagnostics(result).contains("cyclic"),
+                "entry did not shadow the on-disk file, got: {}",
+                diagnostics(result)
+            );
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// Null-pointer and argument handling on the new export.
+    #[test]
+    fn entry_vpath_null_safety() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let source = b"Hello";
+            let mut result: *mut TypstCompileResult = ptr::null_mut();
+
+            assert_eq!(
+                typst_compile_with_path(
+                    ptr::null_mut(),
+                    source.as_ptr(),
+                    source.len() as i32,
+                    ptr::null(),
+                    &mut result
+                ),
+                TYPST_ERR_NULL_POINTER
+            );
+            assert_eq!(
+                typst_compile_with_path(compiler, ptr::null(), 0, ptr::null(), &mut result),
+                TYPST_ERR_NULL_POINTER
+            );
+            assert_eq!(
+                typst_compile_with_path(
+                    compiler,
+                    source.as_ptr(),
+                    source.len() as i32,
+                    ptr::null(),
+                    ptr::null_mut()
+                ),
+                TYPST_ERR_NULL_POINTER
+            );
+            assert_eq!(
+                typst_compile_with_path(compiler, source.as_ptr(), -1, ptr::null(), &mut result),
+                TYPST_ERR_INVALID_ARGUMENT
+            );
+
             typst_compiler_free(compiler);
         }
     }

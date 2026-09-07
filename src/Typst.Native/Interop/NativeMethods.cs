@@ -84,13 +84,28 @@ internal static partial class NativeMethods
 
     /// <summary>
     /// Compile a Typst source string. <paramref name="source"/> is a UTF-8
-    /// byte pointer, not null-terminated.
+    /// byte pointer, not null-terminated. The entry source is detached, i.e.
+    /// pinned at the virtual path <c>/main.typ</c>.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern unsafe int typst_compile(
         IntPtr compiler,
         byte* source,
         int sourceLen,
+        out IntPtr result);
+
+    /// <summary>
+    /// Compile a Typst source string, placing the entry source at
+    /// <paramref name="mainVirtualPath"/> in the virtual file system so that
+    /// relative paths inside it resolve from there. A null path is equivalent
+    /// to <see cref="typst_compile"/>.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern unsafe int typst_compile_with_path(
+        IntPtr compiler,
+        byte* source,
+        int sourceLen,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? mainVirtualPath,
         out IntPtr result);
 
     // -----------------------------------------------------------------------

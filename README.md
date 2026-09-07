@@ -57,6 +57,44 @@ disk also work when a root directory is set via `SetRoot` (or implicitly by
 `CompileFile`); virtual files added with `AddFile` take precedence over disk
 and persist until `ClearFiles()` is called or the compiler is disposed.
 
+### Roots and multi-directory projects
+
+Typst resolves every relative path — `#import`, `#include`, `#read`, `#image` —
+against the directory of the file doing the referencing, and refuses to read
+anything outside the root. Set a root wide enough to span everything the
+document needs, then compile the entry file at its real position underneath it:
+
+```
+project/
+  shared/lib.typ
+  reports/annual.typ     #import "../shared/lib.typ": *
+```
+
+```csharp
+using var compiler = new TypstCompiler();
+compiler.SetRoot(@"C:\project");
+
+using var result = compiler.CompileFile(@"C:\project\reports\annual.typ");
+```
+
+This is the same arrangement as `typst compile --root project reports/annual.typ`.
+
+If you do not call `SetRoot`, `CompileFile` uses the entry file's own directory
+as the root. Single-directory projects then work with no setup, but a `../` in
+the entry file escapes the root and fails. `CompileFile` throws if the entry
+file lies outside a root you set explicitly, since Typst could not read it.
+
+To compile source held in memory that logically belongs at some location, pass
+that location so relative paths resolve from it. The file need not exist:
+
+```csharp
+compiler.SetRoot(@"C:\project");
+using var result = compiler.Compile(markup, "reports/annual.typ");
+```
+
+The single-argument `Compile(source)` has no location to resolve against, so it
+behaves as though the source sat at the root, and a leading `../` in it fails.
+
 ### PNG rendering
 
 Render any page of a successful compilation to a PNG image:

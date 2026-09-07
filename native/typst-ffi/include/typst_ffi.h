@@ -103,6 +103,12 @@ TYPST_API int32_t typst_compiler_clear_files(struct typst_TypstCompiler *compile
  * (not null-terminated). On success, `*result` receives an opaque handle
  * that must be freed with `typst_result_free`.
  *
+ * The entry source is *detached*: it occupies the virtual path `/main.typ`,
+ * directly at the compilation root. Relative paths inside it therefore
+ * resolve against the root, and a leading `..` always escapes it. Use
+ * `typst_compile_with_path` to place the entry elsewhere in the virtual
+ * file system.
+ *
  * Returns `TYPST_OK` (0) on success (even if compilation produced errors —
  * check with `typst_result_is_success`). Returns a negative error code on
  * API misuse (null pointers, invalid UTF-8).
@@ -116,6 +122,41 @@ int32_t typst_compile(struct typst_TypstCompiler *compiler,
                       const uint8_t *source,
                       int32_t source_len,
                       struct typst_TypstCompileResult **result);
+
+/**
+ * Compile a Typst source string, giving the entry source a location in the
+ * virtual file system.
+ *
+ * Identical to `typst_compile`, except that `main_vpath` names where the
+ * entry source sits relative to the compilation root. This is what makes
+ * relative paths in the entry resolve the way the `typst` CLI resolves them:
+ * an entry registered at `"sub/main.typ"` can reach `"../other/dep.typ"`,
+ * because that resolves to `/other/dep.typ`, still inside the root.
+ *
+ * `main_vpath` is a null-terminated UTF-8 virtual path rooted at the
+ * compilation root, using the same rules as `typst_compiler_add_file`:
+ * `"sub/main.typ"` and `"/sub/main.typ"` are equivalent, and backslashes are
+ * treated as separators on every platform. Passing `NULL` reproduces
+ * `typst_compile` exactly, i.e. a detached entry at `/main.typ`.
+ *
+ * The entry source always shadows both an on-disk file and a virtual file
+ * registered at the same path, so `main_vpath` need not exist on disk.
+ *
+ * Returns `TYPST_ERR_INVALID_ARGUMENT` if `main_vpath` is not a usable
+ * virtual path, for example if it escapes the root or normalizes to the bare
+ * root itself.
+ *
+ * # Safety
+ * All pointer arguments must be valid. `source` must point to `source_len`
+ * valid bytes. `main_vpath` must be a valid null-terminated UTF-8 string, or
+ * `NULL`.
+ */
+TYPST_API
+int32_t typst_compile_with_path(struct typst_TypstCompiler *compiler,
+                                const uint8_t *source,
+                                int32_t source_len,
+                                const char *main_vpath,
+                                struct typst_TypstCompileResult **result);
 
 /**
  * Returns `1` if the compilation succeeded, `0` if it failed.

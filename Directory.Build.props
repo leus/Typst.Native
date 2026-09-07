@@ -20,6 +20,6 @@
     <!-- Versioning convention: major and minor MUST match the Typst version
          bundled via native/typst-ffi (see its Cargo.toml). The patch version
          is ours to increment for fixes that don't change the Typst version. -->
-    <VersionPrefix>0.15.0</VersionPrefix>
+    <VersionPrefix>0.15.1</VersionPrefix>
   </PropertyGroup>
 </Project>
