@@ -140,6 +140,16 @@ internal static partial class NativeMethods
         out int len);
 
     /// <summary>
+    /// Get the HTML output. <paramref name="data"/> points into the
+    /// result's internal buffer (valid until <see cref="typst_result_free"/>).
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern unsafe int typst_result_get_html(
+        IntPtr result,
+        out byte* data,
+        out int len);
+
+    /// <summary>
     /// Render a page (0-indexed) to PNG. On success <paramref name="buffer"/>
     /// receives a buffer handle that must be freed with
     /// <see cref="typst_buffer_free"/>.

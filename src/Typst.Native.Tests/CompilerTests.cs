@@ -70,6 +70,18 @@ public class CompilerTests : IDisposable
     }
 
     [Fact]
+    public void Compile_SimpleMarkup_ProduceHtml()
+    {
+        using var result = _compiler.Compile("Hello from HTML!");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.PageCount >= 1);
+
+        string html = result.ToHtml();
+        Assert.Contains("<html", html);
+    }
+
+    [Fact]
     public void RenderPng_SimpleMarkup_ProducesPngBytes()
     {
         using var result = _compiler.Compile("Hello from PNG!");
