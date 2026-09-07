@@ -8,12 +8,22 @@ all-features = true
 [advisories]
 # Check all crates (workspace + transitive) for known vulnerabilities
 version = 2
-# Ignore unmaintained advisories for transitive dependencies pulled in by Typst
-# that we cannot control. These are not security vulnerabilities.
 ignore = [
+    # Unmaintained crates reached only through Typst. Not vulnerabilities, and
+    # not ours to replace.
     "RUSTSEC-2025-0141", # bincode — considered complete by maintainers
     "RUSTSEC-2024-0436", # paste — transitive dep from Typst
     "RUSTSEC-2024-0320", # yaml-rust — transitive dep from Typst
+    "RUSTSEC-2026-0206", # rustybuzz — transitive dep from Typst
+    "RUSTSEC-2026-0192", # ttf-parser — transitive dep from Typst
+
+    # Real vulnerabilities in quick-xml 0.38.4, both denial of service. Kept
+    # only because there is nothing to upgrade to: the fix is in 0.41.0, and
+    # the sole path to the vulnerable copy is citationberg 0.7.0, the newest
+    # release, which requires ^0.38.1. Remove both entries once citationberg
+    # publishes a release that takes 0.41. Tracked in issue #22.
+    "RUSTSEC-2026-0194", # quick-xml — quadratic run time on duplicate attributes
+    "RUSTSEC-2026-0195", # quick-xml — unbounded allocation in NsReader
 ]
 
 [licenses]

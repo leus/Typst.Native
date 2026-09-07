@@ -1,0 +1,17 @@
+# cargo-audit configuration
+# https://github.com/rustsec/rustsec/tree/main/cargo-audit
+#
+# Keep this list in step with the `[advisories] ignore` list in ../deny.toml.
+# cargo-audit only fails on vulnerabilities, so unmaintained advisories that
+# deny.toml has to ignore explicitly do not need an entry here.
+
+[advisories]
+ignore = [
+    # Real vulnerabilities in quick-xml 0.38.4, both denial of service. Kept
+    # only because there is nothing to upgrade to: the fix is in 0.41.0, and
+    # the sole path to the vulnerable copy is citationberg 0.7.0, the newest
+    # release, which requires ^0.38.1. Remove both entries once citationberg
+    # publishes a release that takes 0.41. Tracked in issue #22.
+    "RUSTSEC-2026-0194", # quick-xml — quadratic run time on duplicate attributes
+    "RUSTSEC-2026-0195", # quick-xml — unbounded allocation in NsReader
+]
