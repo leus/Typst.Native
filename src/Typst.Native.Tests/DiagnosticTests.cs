@@ -42,5 +42,38 @@ public class DiagnosticTests : IDisposable
         var warning = Assert.Single(result.Diagnostics);
         Assert.Equal(DiagnosticSeverity.Warning, warning.Severity);
         Assert.Contains("unknown font family", warning.Message);
+
+        // The span is the font name literal, 17th character of line 1.
+        Assert.Equal(1, warning.Line);
+        Assert.Equal(17, warning.Column);
+    }
+
+    [Fact]
+    public void Compile_Error_ReportsOneBasedPosition()
+    {
+        using var result = _compiler.Compile("#undefined_thing\n");
+
+        Assert.False(result.IsSuccess);
+
+        // The span is the identifier, which starts right after the '#'.
+        var error = Assert.Single(result.Diagnostics);
+        Assert.Equal(DiagnosticSeverity.Error, error.Severity);
+        Assert.Equal(1, error.Line);
+        Assert.Equal(2, error.Column);
+        Assert.StartsWith("[Error] (1:2) ", error.ToString());
+    }
+
+    [Fact]
+    public void Compile_ErrorOnLaterLine_CountsLinesAndCharactersFromOne()
+    {
+        // Two non-ASCII characters before the error: columns count
+        // characters, not UTF-8 bytes.
+        using var result = _compiler.Compile("first\n\u00e9\u00e9 #undefined_thing\n");
+
+        Assert.False(result.IsSuccess);
+
+        var error = Assert.Single(result.Diagnostics);
+        Assert.Equal(2, error.Line);
+        Assert.Equal(5, error.Column);
     }
 }

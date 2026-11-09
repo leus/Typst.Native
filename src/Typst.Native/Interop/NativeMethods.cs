@@ -198,7 +198,9 @@ internal static partial class NativeMethods
     internal static extern int typst_result_diagnostic_count(IntPtr result);
 
     /// <summary>
-    /// Get a diagnostic entry by index.
+    /// Get a diagnostic entry by index. <paramref name="line"/> and
+    /// <paramref name="column"/> are 0-based, or <c>-1</c> when the location
+    /// is unknown.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern unsafe int typst_result_get_diagnostic(

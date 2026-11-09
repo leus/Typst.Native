@@ -22,7 +22,7 @@ use std::slice;
 
 use typst::foundations::Bytes;
 use typst_layout::PagedDocument;
-use typst::syntax::{FileId, RootedPath, VirtualPath, VirtualRoot};
+use typst::syntax::{DiagSpan, FileId, RootedPath, VirtualPath, VirtualRoot};
 use typst::{World, WorldExt};
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,9 @@ enum CompileResultKind {
 struct TypstDiagnosticEntry {
     severity: i32, // 0 = error, 1 = warning
     message: String,
+    /// 0-based line, or `-1` if the location is unknown.
     line: i64,
+    /// 0-based column in characters, or `-1` if the location is unknown.
     column: i64,
 }
 
@@ -375,7 +377,7 @@ fn compile_inner(
     source: &str,
     main_id: Option<FileId>,
 ) -> TypstCompileResult {
-    use typst::diag::{Severity, Warned};
+    use typst::diag::Warned;
     use typst_pdf::PdfOptions;
     use typst_scribus::SlaOptions;
     use typst_html::HtmlOptions;
@@ -396,20 +398,10 @@ fn compile_inner(
             let pdf = match typst_pdf::pdf(&document, &PdfOptions::default()) {
                 Ok(bytes) => bytes,
                 Err(errors) => {
-                    let diagnostics = errors
-                        .iter()
-                        .map(|d| TypstDiagnosticEntry {
-                            severity: match d.severity {
-                                Severity::Error => 0,
-                                Severity::Warning => 1,
-                            },
-                            message: d.message.to_string(),
-                            line: 0,
-                            column: 0,
-                        })
-                        .collect();
                     return TypstCompileResult {
-                        kind: CompileResultKind::Failure { diagnostics },
+                        kind: CompileResultKind::Failure {
+                            diagnostics: to_diagnostic_entries(&world, &errors),
+                        },
                     };
                 }
             };
@@ -432,39 +424,19 @@ fn compile_inner(
                     match typst_html::html(&html_document, &HtmlOptions::default()) {
                         Ok(strs) => strs,
                         Err(errors) => {
-                            let diagnostics = errors
-                                .iter()
-                                .map(|d| TypstDiagnosticEntry {
-                                    severity: match d.severity {
-                                        Severity::Error => 0,
-                                        Severity::Warning => 1,
-                                    },
-                                    message: d.message.to_string(),
-                                    line: 0,
-                                    column: 0,
-                                })
-                                .collect();
                             return TypstCompileResult {
-                                kind: CompileResultKind::Failure { diagnostics },
+                                kind: CompileResultKind::Failure {
+                                    diagnostics: to_diagnostic_entries(&world, &errors),
+                                },
                             };
                         }
                     }
                 }
                 Warned { output: Err(errors), .. } => {
-                    let diagnostics = errors
-                        .iter()
-                        .map(|d| TypstDiagnosticEntry {
-                            severity: match d.severity {
-                                Severity::Error => 0,
-                                Severity::Warning => 1,
-                            },
-                            message: d.message.to_string(),
-                            line: 0,
-                            column: 0,
-                        })
-                        .collect();
                     return TypstCompileResult {
-                        kind: CompileResultKind::Failure { diagnostics },
+                        kind: CompileResultKind::Failure {
+                            diagnostics: to_diagnostic_entries(&world, &errors),
+                        },
                     };
                 }
             };
@@ -491,8 +463,9 @@ fn compile_inner(
     }
 }
 
-/// Convert Typst source diagnostics (errors or warnings) into FFI entries,
-/// resolving each span to a line and column in the file it points into.
+/// Convert Typst diagnostics (errors or warnings, from compiling or
+/// exporting) into FFI entries, resolving each span to a line and column in
+/// the file it points into.
 fn to_diagnostic_entries(
     world: &world::SimpleWorld,
     diagnostics: &[typst::diag::SourceDiagnostic],
@@ -502,19 +475,7 @@ fn to_diagnostic_entries(
     diagnostics
         .iter()
         .map(|d| {
-            let (line, column) = if let Some(id) = d.span.id() {
-                if let Ok(src) = world.source(id) {
-                    let range = world.range(d.span).unwrap_or(0..0);
-                    let line_idx = src.lines().byte_to_line(range.start).unwrap_or(0);
-                    let col_idx = src.lines().byte_to_column(range.start).unwrap_or(0);
-                    (line_idx as i64, col_idx as i64)
-                } else {
-                    (0, 0)
-                }
-            } else {
-                (0, 0)
-            };
-
+            let (line, column) = locate(world, d.span);
             TypstDiagnosticEntry {
                 severity: match d.severity {
                     Severity::Error => 0,
@@ -526,6 +487,28 @@ fn to_diagnostic_entries(
             }
         })
         .collect()
+}
+
+/// Resolve the start of `span` to a 0-based `(line, column)`, with the
+/// column counted in characters. Returns `(-1, -1)` when the location is
+/// unknown: the span is detached, its file can't be loaded, or the offset
+/// doesn't map to a position in that file.
+fn locate(world: &world::SimpleWorld, span: DiagSpan) -> (i64, i64) {
+    const UNKNOWN: (i64, i64) = (-1, -1);
+
+    let Some(id) = span.id() else {
+        return UNKNOWN;
+    };
+    let Ok(source) = world.source(id) else {
+        return UNKNOWN;
+    };
+    let Some(range) = world.range(span) else {
+        return UNKNOWN;
+    };
+    match source.lines().byte_to_line_column(range.start) {
+        Some((line, column)) => (line as i64, column as i64),
+        None => UNKNOWN,
+    }
 }
 
 // ===========================================================================
@@ -786,6 +769,12 @@ pub unsafe extern "C" fn typst_result_diagnostic_count(
 ///
 /// Sets `*severity` (0 = error, 1 = warning), `*message` (UTF-8, owned by
 /// the result), `*message_len`, `*line`, and `*column`.
+///
+/// `*line` and `*column` are 0-based, and both are `-1` when the location is
+/// unknown (for example, a diagnostic not tied to any source file). The
+/// column counts characters (Unicode scalar values), not bytes or UTF-16
+/// code units. The position is in the file the diagnostic points into, which
+/// is not necessarily the entry source.
 ///
 /// Returns `TYPST_OK`, `TYPST_ERR_NULL_POINTER` if `result` is null, or
 /// `TYPST_ERR_PAGE_OUT_OF_RANGE` if `index` is out of range.
@@ -1735,6 +1724,51 @@ mod tests {
             typst_result_free(result);
             typst_compiler_free(compiler);
         }
+    }
+
+    /// Issue #21: positions are 0-based over the FFI. The error's span is
+    /// the identifier, which starts right after the `#`.
+    #[test]
+    fn error_position_is_zero_based() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile(compiler, "#undefined_thing\n");
+            assert_eq!(typst_result_is_success(result), 0);
+
+            let diags = read_diagnostics(result);
+            assert_eq!(diags.len(), 1, "{diags:?}");
+            assert_eq!(diags[0].severity, 0, "{diags:?}");
+            assert_eq!((diags[0].line, diags[0].column), (0, 1), "{diags:?}");
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// Lines and columns are counted from the start of the line the span is
+    /// on, in characters rather than bytes.
+    #[test]
+    fn error_position_on_later_line_counts_characters() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile(compiler, "first\n\u{e9}\u{e9} #undefined_thing\n");
+            assert_eq!(typst_result_is_success(result), 0);
+
+            let diags = read_diagnostics(result);
+            assert_eq!(diags.len(), 1, "{diags:?}");
+            assert_eq!((diags[0].line, diags[0].column), (1, 4), "{diags:?}");
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    /// Issue #21: an unknown location is `(-1, -1)`, not `(0, 0)`, which
+    /// would be indistinguishable from the start of the file.
+    #[test]
+    fn detached_span_has_unknown_position() {
+        let world = world::SimpleWorld::new("hello", None, None, &[], HashMap::new());
+        assert_eq!(locate(&world, DiagSpan::detached()), (-1, -1));
     }
 
     #[test]

@@ -323,11 +323,18 @@ public sealed class TypstCompileResult : IDisposable
                 : string.Empty;
 
             diagnostics[i] = new TypstDiagnostic(
-                (DiagnosticSeverity)severity, msg, line, column);
+                (DiagnosticSeverity)severity, msg, ToOneBased(line), ToOneBased(column));
         }
 
         return diagnostics;
     }
+
+    /// <summary>
+    /// Converts a native 0-based line or column to the 1-based value exposed
+    /// by <see cref="TypstDiagnostic"/>. The native side reports an unknown
+    /// location as <c>-1</c>, which stays <c>-1</c>.
+    /// </summary>
+    private static long ToOneBased(long nativeIndex) => nativeIndex >= 0 ? nativeIndex + 1 : -1;
 
     /// <summary>
     /// Convenience property that returns <see cref="GetDiagnostics"/>.

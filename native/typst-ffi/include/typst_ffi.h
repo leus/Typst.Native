@@ -300,6 +300,12 @@ TYPST_API int32_t typst_result_diagnostic_count(const struct typst_TypstCompileR
  * Sets `*severity` (0 = error, 1 = warning), `*message` (UTF-8, owned by
  * the result), `*message_len`, `*line`, and `*column`.
  *
+ * `*line` and `*column` are 0-based, and both are `-1` when the location is
+ * unknown (for example, a diagnostic not tied to any source file). The
+ * column counts characters (Unicode scalar values), not bytes or UTF-16
+ * code units. The position is in the file the diagnostic points into, which
+ * is not necessarily the entry source.
+ *
  * Returns `TYPST_OK`, `TYPST_ERR_NULL_POINTER` if `result` is null, or
  * `TYPST_ERR_PAGE_OUT_OF_RANGE` if `index` is out of range.
  *

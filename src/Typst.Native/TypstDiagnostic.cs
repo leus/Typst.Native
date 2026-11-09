@@ -27,8 +27,17 @@ public sealed class TypstDiagnostic
     /// Gets the 1-based column number in the source where the diagnostic
     /// originated, or <c>-1</c> if the location is unknown.
     /// </summary>
+    /// <remarks>
+    /// Columns count Unicode characters (code points), so a character outside
+    /// the Basic Multilingual Plane counts once even though it occupies two
+    /// UTF-16 <see cref="char"/> values in a .NET string.
+    /// </remarks>
     public long Column { get; }
 
+    /// <param name="severity">The severity.</param>
+    /// <param name="message">The message.</param>
+    /// <param name="line">The 1-based line, or <c>-1</c> if unknown.</param>
+    /// <param name="column">The 1-based column, or <c>-1</c> if unknown.</param>
     internal TypstDiagnostic(DiagnosticSeverity severity, string message, long line, long column)
     {
         Severity = severity;
