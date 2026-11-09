@@ -280,8 +280,13 @@ public sealed class TypstCompileResult : IDisposable
 
     /// <summary>
     /// Gets all diagnostics (errors and warnings) from the compilation.
-    /// Returns an empty list for successful compilations.
     /// </summary>
+    /// <remarks>
+    /// A failed compilation reports the errors that stopped it. A successful
+    /// compilation can still report warnings (for example, an unknown font
+    /// family), so check this list even when <see cref="IsSuccess"/> is
+    /// <see langword="true"/>. A clean compilation returns an empty list.
+    /// </remarks>
     public unsafe IReadOnlyList<TypstDiagnostic> GetDiagnostics()
     {
         ThrowIfDisposed();

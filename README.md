@@ -40,6 +40,9 @@ else
 }
 ```
 
+`Diagnostics` is not only for failures: a successful compile can still carry
+warnings (an unknown font family, for example), so check it either way.
+
 ### Images and virtual files
 
 Supply in-memory files — images, data files, or `.typ` modules — that your

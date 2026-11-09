@@ -191,7 +191,8 @@ internal static partial class NativeMethods
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Get the number of diagnostics in a failed result.
+    /// Get the number of diagnostics in a result: the errors of a failed
+    /// compilation, or the warnings of a successful one.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int typst_result_diagnostic_count(IntPtr result);

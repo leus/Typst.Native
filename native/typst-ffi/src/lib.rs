@@ -57,6 +57,8 @@ enum CompileResultKind {
         page_count: i32,
         /// The compiled document, kept alive for on-demand PNG rendering.
         document: PagedDocument,
+        /// Warnings emitted by the paged compile. Never contains errors.
+        diagnostics: Vec<TypstDiagnosticEntry>,
     },
     Failure {
         diagnostics: Vec<TypstDiagnosticEntry>,
@@ -386,8 +388,7 @@ fn compile_inner(
         compiler.files.clone(),
     );
 
-    let Warned { output, warnings: _ } =
-        typst::compile::<PagedDocument>(&world);
+    let Warned { output, warnings } = typst::compile::<PagedDocument>(&world);
 
     match output {
         Ok(document) => {
@@ -423,7 +424,9 @@ fn compile_inner(
             // Export to Scribus SLA
             let sla = typst_scribus::sla(&document, &SlaOptions::default());
 
-            // Export to HTML
+            // Export to HTML. This compiles the same source a second time, so
+            // its warnings would duplicate the paged compile's; they are
+            // deliberately dropped.
             let html = match typst::compile::<typst_html::HtmlDocument>(&world) {
                 Warned { output: Ok(html_document), .. } => {
                     match typst_html::html(&html_document, &HtmlOptions::default()) {
@@ -476,43 +479,53 @@ fn compile_inner(
                     html,
                     page_count,
                     document,
+                    diagnostics: to_diagnostic_entries(&world, &warnings),
                 },
             }
         }
-        Err(errors) => {
-            let diagnostics = errors
-                .iter()
-                .map(|d| {
-                    let (line, column) = if let Some(id) = d.span.id() {
-                        if let Ok(src) = world.source(id) {
-                            let range = world.range(d.span).unwrap_or(0..0);
-                            let line_idx = src.lines().byte_to_line(range.start).unwrap_or(0);
-                            let col_idx = src.lines().byte_to_column(range.start).unwrap_or(0);
-                            (line_idx as i64, col_idx as i64)
-                        } else {
-                            (0, 0)
-                        }
-                    } else {
-                        (0, 0)
-                    };
-
-                    TypstDiagnosticEntry {
-                        severity: match d.severity {
-                            Severity::Error => 0,
-                            Severity::Warning => 1,
-                        },
-                        message: d.message.to_string(),
-                        line,
-                        column,
-                    }
-                })
-                .collect();
-
-            TypstCompileResult {
-                kind: CompileResultKind::Failure { diagnostics },
-            }
-        }
+        Err(errors) => TypstCompileResult {
+            kind: CompileResultKind::Failure {
+                diagnostics: to_diagnostic_entries(&world, &errors),
+            },
+        },
     }
+}
+
+/// Convert Typst source diagnostics (errors or warnings) into FFI entries,
+/// resolving each span to a line and column in the file it points into.
+fn to_diagnostic_entries(
+    world: &world::SimpleWorld,
+    diagnostics: &[typst::diag::SourceDiagnostic],
+) -> Vec<TypstDiagnosticEntry> {
+    use typst::diag::Severity;
+
+    diagnostics
+        .iter()
+        .map(|d| {
+            let (line, column) = if let Some(id) = d.span.id() {
+                if let Ok(src) = world.source(id) {
+                    let range = world.range(d.span).unwrap_or(0..0);
+                    let line_idx = src.lines().byte_to_line(range.start).unwrap_or(0);
+                    let col_idx = src.lines().byte_to_column(range.start).unwrap_or(0);
+                    (line_idx as i64, col_idx as i64)
+                } else {
+                    (0, 0)
+                }
+            } else {
+                (0, 0)
+            };
+
+            TypstDiagnosticEntry {
+                severity: match d.severity {
+                    Severity::Error => 0,
+                    Severity::Warning => 1,
+                },
+                message: d.message.to_string(),
+                line,
+                column,
+            }
+        })
+        .collect()
 }
 
 // ===========================================================================
@@ -748,9 +761,11 @@ pub unsafe extern "C" fn typst_buffer_get_data(
 // Diagnostics
 // ===========================================================================
 
-/// Get the number of diagnostics in a failed compilation result.
+/// Get the number of diagnostics in a compilation result.
 ///
-/// Returns `0` for successful results or null pointers.
+/// A failed result carries the errors that stopped compilation. A successful
+/// result carries any warnings the compile produced, so its count may be
+/// non-zero. Returns `0` for null pointers.
 ///
 /// # Safety
 /// `result` must be a valid handle or null.
@@ -762,15 +777,18 @@ pub unsafe extern "C" fn typst_result_diagnostic_count(
         return 0;
     }
     match &(*result).kind {
-        CompileResultKind::Success { .. } => 0,
-        CompileResultKind::Failure { diagnostics } => diagnostics.len() as i32,
+        CompileResultKind::Success { diagnostics, .. }
+        | CompileResultKind::Failure { diagnostics } => diagnostics.len() as i32,
     }
 }
 
-/// Get a diagnostic entry by index.
+/// Get a diagnostic entry by index, for successful and failed results alike.
 ///
 /// Sets `*severity` (0 = error, 1 = warning), `*message` (UTF-8, owned by
 /// the result), `*message_len`, `*line`, and `*column`.
+///
+/// Returns `TYPST_OK`, `TYPST_ERR_NULL_POINTER` if `result` is null, or
+/// `TYPST_ERR_PAGE_OUT_OF_RANGE` if `index` is out of range.
 ///
 /// # Safety
 /// All pointers must be valid. `index` must be in range.
@@ -788,7 +806,8 @@ pub unsafe extern "C" fn typst_result_get_diagnostic(
         return TYPST_ERR_NULL_POINTER;
     }
     match &(*result).kind {
-        CompileResultKind::Failure { diagnostics } => {
+        CompileResultKind::Success { diagnostics, .. }
+        | CompileResultKind::Failure { diagnostics } => {
             if index < 0 || index as usize >= diagnostics.len() {
                 return TYPST_ERR_PAGE_OUT_OF_RANGE;
             }
@@ -808,7 +827,6 @@ pub unsafe extern "C" fn typst_result_get_diagnostic(
             }
             TYPST_OK
         }
-        CompileResultKind::Success { .. } => TYPST_ERR_COMPILE_FAILED,
     }
 }
 
@@ -1645,6 +1663,113 @@ mod tests {
                 TYPST_ERR_INVALID_ARGUMENT
             );
 
+            typst_compiler_free(compiler);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Diagnostics
+    // -----------------------------------------------------------------------
+
+    /// One diagnostic as read back through the FFI.
+    #[derive(Debug)]
+    struct Diag {
+        severity: i32,
+        message: String,
+        line: i64,
+        column: i64,
+    }
+
+    /// Read every diagnostic of a result through the FFI.
+    unsafe fn read_diagnostics(result: *const TypstCompileResult) -> Vec<Diag> {
+        (0..typst_result_diagnostic_count(result))
+            .map(|i| {
+                let mut severity: i32 = -1;
+                let mut message: *const u8 = ptr::null();
+                let mut message_len: i32 = 0;
+                let mut line: i64 = i64::MIN;
+                let mut column: i64 = i64::MIN;
+                let rc = typst_result_get_diagnostic(
+                    result,
+                    i,
+                    &mut severity,
+                    &mut message,
+                    &mut message_len,
+                    &mut line,
+                    &mut column,
+                );
+                assert_eq!(rc, TYPST_OK, "diagnostic {i} unreadable");
+                let bytes = slice::from_raw_parts(message, message_len as usize);
+                Diag {
+                    severity,
+                    message: String::from_utf8_lossy(bytes).into_owned(),
+                    line,
+                    column,
+                }
+            })
+            .collect()
+    }
+
+    /// Issue #24: warnings from a successful compile must be reported, once
+    /// each, even though the document is compiled a second time for HTML.
+    #[test]
+    fn success_reports_warnings() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile(
+                compiler,
+                "#set text(font: \"No Such Family At All\")\nhello\n",
+            );
+            assert_eq!(typst_result_is_success(result), 1);
+
+            let diags = read_diagnostics(result);
+            assert_eq!(diags.len(), 1, "expected exactly one warning: {diags:?}");
+            assert_eq!(diags[0].severity, 1, "expected a warning: {diags:?}");
+            assert!(
+                diags[0].message.contains("unknown font family"),
+                "unexpected message: {diags:?}"
+            );
+            // Resolved like errors are: the span is the font name literal.
+            assert_eq!((diags[0].line, diags[0].column), (0, 16), "{diags:?}");
+
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn clean_success_has_no_diagnostics() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile(compiler, "Hello, *world*!\n");
+            assert_eq!(typst_result_is_success(result), 1);
+            assert_eq!(typst_result_diagnostic_count(result), 0);
+            typst_result_free(result);
+            typst_compiler_free(compiler);
+        }
+    }
+
+    #[test]
+    fn get_diagnostic_rejects_out_of_range_index() {
+        unsafe {
+            let compiler = typst_compiler_new();
+            let result = compile(compiler, "Hello\n");
+            let mut severity: i32 = 0;
+            for index in [-1, 0] {
+                assert_eq!(
+                    typst_result_get_diagnostic(
+                        result,
+                        index,
+                        &mut severity,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                    ),
+                    TYPST_ERR_PAGE_OUT_OF_RANGE
+                );
+            }
+            typst_result_free(result);
             typst_compiler_free(compiler);
         }
     }

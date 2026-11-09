@@ -283,9 +283,11 @@ int32_t typst_buffer_get_data(const struct typst_TypstBuffer *buffer,
                               int32_t *len);
 
 /**
- * Get the number of diagnostics in a failed compilation result.
+ * Get the number of diagnostics in a compilation result.
  *
- * Returns `0` for successful results or null pointers.
+ * A failed result carries the errors that stopped compilation. A successful
+ * result carries any warnings the compile produced, so its count may be
+ * non-zero. Returns `0` for null pointers.
  *
  * # Safety
  * `result` must be a valid handle or null.
@@ -293,10 +295,13 @@ int32_t typst_buffer_get_data(const struct typst_TypstBuffer *buffer,
 TYPST_API int32_t typst_result_diagnostic_count(const struct typst_TypstCompileResult *result);
 
 /**
- * Get a diagnostic entry by index.
+ * Get a diagnostic entry by index, for successful and failed results alike.
  *
  * Sets `*severity` (0 = error, 1 = warning), `*message` (UTF-8, owned by
  * the result), `*message_len`, `*line`, and `*column`.
+ *
+ * Returns `TYPST_OK`, `TYPST_ERR_NULL_POINTER` if `result` is null, or
+ * `TYPST_ERR_PAGE_OUT_OF_RANGE` if `index` is out of range.
  *
  * # Safety
  * All pointers must be valid. `index` must be in range.
